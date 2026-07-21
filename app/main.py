@@ -77,6 +77,40 @@ OWNER_CAPPED_REPLY = (
     "month's reset."
 )
 
+
+def _int_override(key: str, default: int) -> int:
+    """Read an admin-editable int setting from Airtable, falling back to the
+    env-var default if unset or invalid."""
+    try:
+        raw = crm.get_setting(key, "")
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# Admin-editable overrides (Settings panel) win over env vars, take effect
+# immediately -- no redeploy. Functions, not constants, so every request
+# sees the latest value.
+def get_search_cap() -> int:
+    return _int_override("cap_search_monthly", SEARCH_MONTHLY_CAP)
+
+
+def get_public_chat_cap() -> int:
+    return _int_override("cap_chat_public", PUBLIC_MONTHLY_CAP)
+
+
+def get_owner_chat_cap() -> int:
+    return _int_override("cap_chat_owner", OWNER_MONTHLY_CAP)
+
+
+def get_tts_voice() -> str:
+    return crm.get_setting("tts_voice_override", "") or TTS_VOICE
+
+
+def get_access_code() -> str:
+    return crm.get_setting("access_code_override", "") or ACCESS_CODE
+
+
 app = FastAPI(title="The Dreamerie Command Center")
 app.add_middleware(
     CORSMiddleware,
@@ -119,7 +153,7 @@ async def access_gate(request: Request, call_next):
     # Public, customer-facing paths (the website chat widget) are never gated.
     if request.url.path in ("/api/unlock", "/api/public-chat", "/widget", "/privacy"):
         return await call_next(request)
-    if request.cookies.get("cc_access") == ACCESS_CODE:
+    if request.cookies.get("cc_access") == get_access_code():
         return await call_next(request)
     if request.url.path.startswith("/api/") or request.url.path.startswith("/static/"):
         return JSONResponse({"detail": "locked"}, status_code=401)
@@ -157,10 +191,11 @@ def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
             {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
             status_code=429,
         )
-    if ACCESS_CODE and req.code == ACCESS_CODE:
+    effective_code = get_access_code()
+    if effective_code and req.code == effective_code:
         _unlock_attempts.pop(ip, None)
         resp = JSONResponse({"ok": True})
-        resp.set_cookie("cc_access", ACCESS_CODE, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
+        resp.set_cookie("cc_access", effective_code, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
         return resp
     attempts.append(now)
     _unlock_attempts[ip] = attempts
@@ -216,7 +251,7 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                    persona: str = "owner") -> ChatResponse:
     # Hard spend circuit breaker: checked BEFORE any Anthropic call is made,
     # so a capped persona costs nothing to refuse.
-    cap = PUBLIC_MONTHLY_CAP if persona == "public" else OWNER_MONTHLY_CAP
+    cap = get_public_chat_cap() if persona == "public" else get_owner_chat_cap()
     capped_reply = PUBLIC_CAPPED_REPLY if persona == "public" else OWNER_CAPPED_REPLY
     if crm.get_chat_count(persona) >= cap:
         return ChatResponse(reply=capped_reply, delegated_to=[])
@@ -233,7 +268,7 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
     effective_tools = list(tools)
     effective_system_prompt = system_prompt
     if enable_search:
-        if crm.get_search_count() < SEARCH_MONTHLY_CAP:
+        if crm.get_search_count() < get_search_cap():
             search_available = True
             effective_tools = effective_tools + [WEB_SEARCH_TOOL]
         else:
@@ -302,7 +337,7 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                 answer = call_sub_agent(agent_key, query)
                 if answer.strip().startswith("NEEDS_SEARCH:"):
                     search_query = answer.split("NEEDS_SEARCH:", 1)[1].strip()
-                    if search_available and crm.get_search_count() < SEARCH_MONTHLY_CAP:
+                    if search_available and crm.get_search_count() < get_search_cap():
                         search_text, used = run_web_search(search_query)
                         if used:
                             crm.increment_search_count(used)
@@ -348,30 +383,66 @@ def history(limit: int = 40) -> JSONResponse:
     return JSONResponse({"history": crm.get_history(limit)})
 
 
+TTS_VOICE_OPTIONS = [
+    "en-GB-RyanNeural", "en-US-AndrewNeural", "en-US-GuyNeural",
+    "en-US-EmmaNeural", "en-US-AriaNeural", "en-GB-SoniaNeural",
+]
+
+
 class SettingsUpdate(BaseModel):
     gmail_address: str = ""
     gmail_app_password: str = ""
+    search_cap: str = ""
+    public_chat_cap: str = ""
+    owner_chat_cap: str = ""
+    access_code: str = ""
+    tts_voice: str = ""
 
 
 @app.get("/api/settings")
 def get_settings() -> JSONResponse:
-    """Owner-only (behind the access gate). Reports connection status --
-    never echoes the app password itself back to the frontend."""
+    """Owner-only (behind the access gate). Reports connection status and
+    current admin-editable config -- never echoes secrets (app password,
+    access code) back to the frontend, only whether they're set/custom."""
     return JSONResponse({
         "gmail_address": emailer.get_gmail_address(),
         "gmail_connected": emailer.is_configured(),
+        "search_cap": get_search_cap(),
+        "search_count": crm.get_search_count(),
+        "public_chat_cap": get_public_chat_cap(),
+        "public_chat_count": crm.get_chat_count("public"),
+        "owner_chat_cap": get_owner_chat_cap(),
+        "owner_chat_count": crm.get_chat_count("owner"),
+        "tts_voice": get_tts_voice(),
+        "tts_voice_options": TTS_VOICE_OPTIONS,
+        "access_code_is_custom": bool(crm.get_setting("access_code_override", "")),
     })
 
 
 @app.post("/api/settings")
 def save_settings(req: SettingsUpdate) -> JSONResponse:
-    """Owner-only. Saves connector credentials to Airtable Settings so they
-    take effect immediately -- no Render redeploy needed. Blank fields are
-    left untouched (so re-saving the address doesn't wipe a saved password)."""
+    """Owner-only. Saves connector credentials and admin config to Airtable
+    Settings so they take effect immediately -- no Render redeploy needed.
+    Blank fields are left untouched (so re-saving one field doesn't wipe
+    another, and re-saving the address doesn't clear a saved password)."""
     if req.gmail_address.strip():
         crm.set_setting(emailer.GMAIL_ADDRESS_KEY, req.gmail_address.strip())
     if req.gmail_app_password.strip():
         crm.set_setting(emailer.GMAIL_APP_PASSWORD_KEY, req.gmail_app_password.strip())
+    for key, field in (
+        ("cap_search_monthly", req.search_cap),
+        ("cap_chat_public", req.public_chat_cap),
+        ("cap_chat_owner", req.owner_chat_cap),
+    ):
+        if field.strip():
+            try:
+                crm.set_setting(key, str(int(field.strip())))
+            except ValueError:
+                pass
+    if req.tts_voice.strip():
+        crm.set_setting("tts_voice_override", req.tts_voice.strip())
+    if req.access_code.strip():
+        crm.set_setting("access_code_override", req.access_code.strip())
     return JSONResponse({"ok": True, "gmail_connected": emailer.is_configured()})
 
 
@@ -426,7 +497,7 @@ async def _grok_tts(text: str) -> bytes:
 
 async def _edge_tts(text: str) -> bytes:
     """Free Microsoft Edge neural TTS -> MP3 bytes."""
-    communicate = edge_tts.Communicate(text, TTS_VOICE, rate=TTS_RATE)
+    communicate = edge_tts.Communicate(text, get_tts_voice(), rate=TTS_RATE)
     audio = bytearray()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":

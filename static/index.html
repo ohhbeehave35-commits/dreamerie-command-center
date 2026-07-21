@@ -135,13 +135,13 @@
     <div id="historyList" style="display:flex;flex-direction:column;gap:12px"><div style="color:#6f6e66;font-size:13px">Loading…</div></div>
   </div>
 
-  <!-- Settings panel: self-serve connectors (no Render access needed) -->
-  <div id="panelSettings" style="display:none;position:absolute;top:110px;left:50%;transform:translateX(-50%);width:520px;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
+  <!-- Settings panel: self-serve connectors + admin config (no Render access needed) -->
+  <div id="panelSettings" style="display:none;position:absolute;top:60px;left:50%;transform:translateX(-50%);width:520px;max-height:780px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">SETTINGS</div>
       <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:24px;cursor:pointer;line-height:1">&times;</button>
     </div>
-    <div style="font-size:12px;color:#7d7c74;margin-bottom:18px">Connect real capabilities — no Render access needed.</div>
+    <div style="font-size:12px;color:#7d7c74;margin-bottom:18px">Connect real capabilities and manage limits — no Render access needed.</div>
 
     <div style="border:1px solid rgba(212,175,55,0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
@@ -154,8 +154,33 @@
       </div>
       <input id="gmailAddress" type="email" placeholder="you@gmail.com" style="width:100%;margin-bottom:8px;padding:9px 11px;font-size:13.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
       <input id="gmailAppPassword" type="password" placeholder="16-character app password" style="width:100%;margin-bottom:10px;padding:9px 11px;font-size:13.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
-      <button id="saveSettingsBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Save &amp; Connect</button>
-      <span id="settingsMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+      <button id="saveEmailBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Save &amp; Connect</button>
+      <span id="emailMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+    </div>
+
+    <div style="border:1px solid rgba(212,175,55,0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
+      <div style="font-weight:600;font-size:13.5px;margin-bottom:10px">Usage &amp; Limits <span style="font-weight:400;color:#7d7c74;font-size:11px">— resets monthly</span></div>
+      <div id="usageRows" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px"></div>
+      <button id="saveCapsBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Save Limits</button>
+      <span id="capsMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+    </div>
+
+    <div style="border:1px solid rgba(212,175,55,0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="font-weight:600;font-size:13.5px">Access Code</div>
+        <span id="accessCodeStatus" style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:2px 8px;border-radius:8px;background:rgba(200,204,210,0.12);color:#c8ccd2">Checking…</span>
+      </div>
+      <div style="font-size:11.5px;color:#7d7c74;margin-bottom:12px;line-height:1.5">Changing this logs out every other device until they enter the new code.</div>
+      <input id="newAccessCode" type="text" placeholder="New access code" style="width:100%;margin-bottom:10px;padding:9px 11px;font-size:13.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <button id="saveAccessCodeBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Change Code</button>
+      <span id="accessCodeMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+    </div>
+
+    <div style="border:1px solid rgba(212,175,55,0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
+      <div style="font-weight:600;font-size:13.5px;margin-bottom:10px">Voice</div>
+      <select id="voiceSelect" style="width:100%;margin-bottom:10px;padding:9px 11px;font-size:13.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px"></select>
+      <button id="saveVoiceBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Save Voice</button>
+      <span id="voiceMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
     </div>
 
     <div style="font-size:11px;color:#5f5e57">More connectors (Google Calendar, etc.) will show up here as they're built.</div>
@@ -655,20 +680,48 @@
   document.querySelectorAll('.panelClose').forEach(b => b.addEventListener('click', () => showPanel(null)));
 
   // Settings panel: self-serve connectors, saved straight to Airtable (no redeploy).
-  function renderSettings() {
-    const statusEl = document.getElementById('gmailStatus');
-    statusEl.textContent = 'Checking…';
-    fetch('/api/settings').then(r => r.json()).then(d => {
-      document.getElementById('gmailAddress').value = d.gmail_address || '';
-      if (d.gmail_connected) {
-        statusEl.textContent = 'Connected'; statusEl.style.background = 'rgba(143,176,143,0.15)'; statusEl.style.color = '#8fb08f';
-      } else {
-        statusEl.textContent = 'Not connected'; statusEl.style.background = 'rgba(224,164,143,0.15)'; statusEl.style.color = '#e0a48f';
-      }
-    }).catch(() => { statusEl.textContent = 'Error loading'; });
+  let _settingsCache = null;
+  function badge(el, ok, onText, offText) {
+    el.textContent = ok ? onText : offText;
+    el.style.background = ok ? 'rgba(143,176,143,0.15)' : 'rgba(224,164,143,0.15)';
+    el.style.color = ok ? '#8fb08f' : '#e0a48f';
   }
-  document.getElementById('saveSettingsBtn').addEventListener('click', () => {
-    const msg = document.getElementById('settingsMsg');
+  function renderSettings() {
+    const gmailStatus = document.getElementById('gmailStatus');
+    const accessStatus = document.getElementById('accessCodeStatus');
+    gmailStatus.textContent = 'Checking…';
+    fetch('/api/settings').then(r => r.json()).then(d => {
+      _settingsCache = d;
+      document.getElementById('gmailAddress').value = d.gmail_address || '';
+      badge(gmailStatus, d.gmail_connected, 'Connected', 'Not connected');
+      accessStatus.textContent = d.access_code_is_custom ? 'Custom' : 'Default';
+
+      const usage = document.getElementById('usageRows');
+      usage.innerHTML = '';
+      [
+        ['Web search', d.search_count, d.search_cap, 'searchCapInput'],
+        ['Public chat', d.public_chat_count, d.public_chat_cap, 'publicCapInput'],
+        ['Owner chat', d.owner_chat_count, d.owner_chat_cap, 'ownerCapInput'],
+      ].forEach(([label, count, cap, id]) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px';
+        row.innerHTML = '<div style="font-size:12.5px;color:#c8ccd2">' + label + ' <span style="color:#7d7c74">(' + count + ' used)</span></div>' +
+          '<input id="' + id + '" type="number" min="0" value="' + cap + '" style="width:90px;padding:6px 8px;font-size:12.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:6px;text-align:right">';
+        usage.appendChild(row);
+      });
+
+      const voiceSelect = document.getElementById('voiceSelect');
+      voiceSelect.innerHTML = '';
+      (d.tts_voice_options || []).forEach(v => {
+        const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
+        if (v === d.tts_voice) opt.selected = true;
+        voiceSelect.appendChild(opt);
+      });
+    }).catch(() => { gmailStatus.textContent = 'Error loading'; });
+  }
+
+  document.getElementById('saveEmailBtn').addEventListener('click', () => {
+    const msg = document.getElementById('emailMsg');
     msg.textContent = 'Saving…';
     fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -681,6 +734,45 @@
       msg.textContent = d.gmail_connected ? 'Saved — connected!' : 'Saved.';
       renderSettings();
     }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
+  });
+
+  document.getElementById('saveCapsBtn').addEventListener('click', () => {
+    const msg = document.getElementById('capsMsg');
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        search_cap: document.getElementById('searchCapInput').value,
+        public_chat_cap: document.getElementById('publicCapInput').value,
+        owner_chat_cap: document.getElementById('ownerCapInput').value,
+      }),
+    }).then(r => r.json()).then(() => { msg.textContent = 'Saved.'; renderSettings(); })
+      .catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
+  });
+
+  document.getElementById('saveAccessCodeBtn').addEventListener('click', () => {
+    const msg = document.getElementById('accessCodeMsg');
+    const val = document.getElementById('newAccessCode').value.trim();
+    if (!val) { msg.textContent = 'Enter a new code first.'; return; }
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_code: val }),
+    }).then(() => {
+      document.getElementById('newAccessCode').value = '';
+      msg.textContent = 'Changed — other devices are now logged out.';
+      renderSettings();
+    }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
+  });
+
+  document.getElementById('saveVoiceBtn').addEventListener('click', () => {
+    const msg = document.getElementById('voiceMsg');
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tts_voice: document.getElementById('voiceSelect').value }),
+    }).then(() => { msg.textContent = 'Saved.'; })
+      .catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
   });
 
   // Render the durable conversation history (pulled fresh from the server each open).
