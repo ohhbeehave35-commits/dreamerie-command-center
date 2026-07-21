@@ -203,24 +203,61 @@ def _ensure_settings_table() -> str:
         return _settings_table_id_cache
 
 
+# Short-TTL snapshot cache for the Settings table. Measured on the flagship
+# instance: per-key reads stacked ~2.5s of Airtable round-trips BEFORE the
+# model even started (caps, usage counts, voice, gmail are all Settings
+# keys). One list call now fetches every key at once and is reused for TTL
+# seconds; writes update the cache in place so this instance always sees its
+# own changes immediately. Admin edits from the Settings panel still take
+# effect within TTL seconds -- the zero-redeploy promise holds.
+_SETTINGS_TTL = float(os.environ.get("SETTINGS_CACHE_TTL", "30"))
+_settings_cache: dict = {}
+_settings_cache_at: float = 0.0
+
+
+def _settings_snapshot() -> dict:
+    """Return {Key: Value} for the whole Settings table, cached for TTL secs."""
+    global _settings_cache, _settings_cache_at
+    import time as _time
+    now = _time.time()
+    if _settings_cache_at and (now - _settings_cache_at) < _SETTINGS_TTL:
+        return _settings_cache
+    tid = _ensure_settings_table()
+    data: dict = {}
+    offset = None
+    with httpx.Client(timeout=30) as c:
+        while True:
+            params = {"pageSize": "100"}
+            if offset:
+                params["offset"] = offset
+            r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(), params=params)
+            r.raise_for_status()
+            j = r.json()
+            for rec in j.get("records", []):
+                f = rec.get("fields", {})
+                if f.get("Key"):
+                    data[f["Key"]] = f.get("Value", "")
+            offset = j.get("offset")
+            if not offset:
+                break
+    _settings_cache, _settings_cache_at = data, now
+    return data
+
+
 def get_setting(key: str, default: str = "") -> str:
-    """Read a single named setting (e.g. the assistant's chosen name)."""
+    """Read a single named setting (via the snapshot cache)."""
     if not is_configured():
         return default
     try:
-        tid = _ensure_settings_table()
-        with httpx.Client(timeout=30) as c:
-            r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
-                      params={"filterByFormula": "{Key}='" + key.replace("'", "") + "'", "pageSize": "1"})
-            r.raise_for_status()
-        recs = r.json().get("records", [])
-        return recs[0]["fields"].get("Value", default) if recs else default
+        return _settings_snapshot().get(key, default)
     except Exception:
         return default
 
 
 def set_setting(key: str, value: str) -> bool:
-    """Write (create or update) a single named setting. Returns success."""
+    """Write (create or update) a single named setting. Returns success.
+    Updates the snapshot cache in place so this instance reads its own write
+    immediately, without waiting out the TTL."""
     if not is_configured():
         return False
     try:
@@ -236,6 +273,8 @@ def set_setting(key: str, value: str) -> bool:
             else:
                 c.post(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
                        json={"fields": {"Key": key, "Value": value}, "typecast": True})
+        if _settings_cache_at:
+            _settings_cache[key] = str(value)
         return True
     except Exception:
         return False

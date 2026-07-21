@@ -9,6 +9,7 @@ Requires ANTHROPIC_API_KEY set in the environment (see .env.example).
 """
 
 import os
+import threading
 import time
 from typing import List, Dict
 
@@ -210,6 +211,9 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     delegated_to: List[str] = []
+    # Per-stage timing breakdown in seconds, ported from the flagship's
+    # latency fix -- lets us verify the fix here with real numbers too.
+    timings: Dict[str, float] = {}
 
 
 def call_sub_agent(agent_key: str, query: str) -> str:
@@ -249,13 +253,18 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                    system_prompt: str = None,
                    tools=DELEGATION_TOOLS, enable_search: bool = False,
                    persona: str = "owner") -> ChatResponse:
+    timings: Dict[str, float] = {"precheck": 0.0, "model": 0.0, "tools": 0.0}
+    _t0 = time.perf_counter()
     # Hard spend circuit breaker: checked BEFORE any Anthropic call is made,
     # so a capped persona costs nothing to refuse.
     cap = get_public_chat_cap() if persona == "public" else get_owner_chat_cap()
     capped_reply = PUBLIC_CAPPED_REPLY if persona == "public" else OWNER_CAPPED_REPLY
     if crm.get_chat_count(persona) >= cap:
         return ChatResponse(reply=capped_reply, delegated_to=[])
-    crm.increment_chat_count(persona)
+    # Fire-and-forget: the count write shouldn't block the reply. The cap
+    # check above reads the cached snapshot, and set_setting updates that
+    # cache in place, so this instance still counts accurately.
+    threading.Thread(target=crm.increment_chat_count, args=(persona,), daemon=True).start()
 
     if system_prompt is None:
         system_prompt = build_main_brain_prompt(crm.get_setting(AGENT_NAME_KEY) or None)
@@ -273,9 +282,11 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
             effective_tools = effective_tools + [WEB_SEARCH_TOOL]
         else:
             effective_system_prompt = system_prompt + SEARCH_CAPPED_NOTE
+    timings["precheck"] = round(time.perf_counter() - _t0, 3)
 
     # Loop to allow multiple rounds of tool use (e.g. two sub-agents needed).
     for _ in range(4):
+        _tm = time.perf_counter()
         resp = client.messages.create(
             model=MODEL,
             max_tokens=1024,
@@ -283,6 +294,7 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
             tools=effective_tools,
             messages=messages,
         )
+        timings["model"] = round(timings["model"] + (time.perf_counter() - _tm), 3)
 
         n_searches = _count_web_searches(resp.content)
         if n_searches:
@@ -291,12 +303,14 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
 
         if resp.stop_reason != "tool_use":
             final_text = "".join(b.text for b in resp.content if b.type == "text")
-            return ChatResponse(reply=final_text, delegated_to=delegated_to)
+            timings["total"] = round(time.perf_counter() - _t0, 3)
+            return ChatResponse(reply=final_text, delegated_to=delegated_to, timings=timings)
 
         # Assistant turn included tool_use block(s); append it, then run each
         # tool and append the results, then loop back to let the Main Brain
         # compose its final answer.
         messages.append({"role": "assistant", "content": resp.content})
+        _tt = time.perf_counter()
         tool_results = []
         for block in resp.content:
             if block.type != "tool_use":
@@ -360,20 +374,29 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                 }
             )
         messages.append({"role": "user", "content": tool_results})
+        timings["tools"] = round(timings["tools"] + (time.perf_counter() - _tt), 3)
 
+    timings["total"] = round(time.perf_counter() - _t0, 3)
     return ChatResponse(
         reply="Sorry, I got stuck coordinating that -- try rephrasing your question.",
         delegated_to=delegated_to,
+        timings=timings,
     )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     result = run_main_brain(req.message, req.history, enable_search=True, persona="owner")
-    # Persist the exchange to durable memory (Airtable) so questions and answers
-    # are remembered forever, across devices and browser sessions.
-    crm.save_turn("user", req.message)
-    crm.save_turn("assistant", result.reply)
+    # Persist the exchange to durable memory (Airtable) in the background --
+    # the user shouldn't wait on bookkeeping after the reply is ready.
+    _ts = time.perf_counter()
+
+    def _persist(user_msg: str, reply: str) -> None:
+        crm.save_turn("user", user_msg)
+        crm.save_turn("assistant", reply)
+
+    threading.Thread(target=_persist, args=(req.message, result.reply), daemon=True).start()
+    result.timings["save"] = round(time.perf_counter() - _ts, 3)
     return result
 
 
