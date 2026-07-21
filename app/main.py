@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from anthropic import Anthropic
 
 from . import crm
+from . import emailer
 from .agents import (
     build_main_brain_prompt,
     build_public_prompt,
@@ -57,6 +58,22 @@ SEARCH_CAPPED_NOTE = (
     "If asked to search, do not attempt it -- tell Susan plainly that search is "
     "capped for now and Vinny needs to raise SEARCH_MONTHLY_CAP or wait for "
     "next month's reset."
+)
+
+# Platform-wide spend guardrail: a hard monthly cap on ordinary chat turns,
+# checked BEFORE any Anthropic call is made. Public gets a much lower default
+# than owner, since it's the surface a stranger or a bot can hit freely.
+PUBLIC_MONTHLY_CAP = int(os.environ.get("PUBLIC_MONTHLY_CAP", "300"))
+OWNER_MONTHLY_CAP = int(os.environ.get("OWNER_MONTHLY_CAP", "2000"))
+PUBLIC_CAPPED_REPLY = (
+    "Thanks so much for reaching out! Our assistant is temporarily at capacity "
+    "for the moment -- please reach out directly and we'll get right back to "
+    "you, or feel free to try again a bit later."
+)
+OWNER_CAPPED_REPLY = (
+    "I've hit my chat budget for this billing period, Susan -- Vinny will need "
+    "to raise OWNER_MONTHLY_CAP in the environment settings or wait for next "
+    "month's reset."
 )
 
 app = FastAPI(title="The Dreamerie Command Center")
@@ -97,7 +114,7 @@ async def access_gate(request: Request, call_next):
     if not ACCESS_CODE:
         return await call_next(request)
     # Public, customer-facing paths (the website chat widget) are never gated.
-    if request.url.path in ("/api/unlock", "/api/public-chat", "/widget"):
+    if request.url.path in ("/api/unlock", "/api/public-chat", "/widget", "/privacy"):
         return await call_next(request)
     if request.cookies.get("cc_access") == ACCESS_CODE:
         return await call_next(request)
@@ -164,7 +181,16 @@ def run_web_search(query: str) -> tuple:
 
 def run_main_brain(user_message: str, history: List[Dict[str, str]],
                    system_prompt: str = None,
-                   tools=DELEGATION_TOOLS, enable_search: bool = False) -> ChatResponse:
+                   tools=DELEGATION_TOOLS, enable_search: bool = False,
+                   persona: str = "owner") -> ChatResponse:
+    # Hard spend circuit breaker: checked BEFORE any Anthropic call is made,
+    # so a capped persona costs nothing to refuse.
+    cap = PUBLIC_MONTHLY_CAP if persona == "public" else OWNER_MONTHLY_CAP
+    capped_reply = PUBLIC_CAPPED_REPLY if persona == "public" else OWNER_CAPPED_REPLY
+    if crm.get_chat_count(persona) >= cap:
+        return ChatResponse(reply=capped_reply, delegated_to=[])
+    crm.increment_chat_count(persona)
+
     if system_prompt is None:
         system_prompt = build_main_brain_prompt(crm.get_setting(AGENT_NAME_KEY) or None)
     messages = list(history) + [{"role": "user", "content": user_message}]
@@ -224,6 +250,19 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
             elif block.name == "log_build_request":
                 delegated_to.append("Build Queue")
                 answer = crm.create_build_request(**block.input)
+            elif block.name == "draft_email":
+                delegated_to.append("Email (draft)")
+                to = block.input.get("to", "")
+                subject = block.input.get("subject", "")
+                body_text = block.input.get("body", "")
+                answer = f"DRAFT -- To: {to} | Subject: {subject}\n\n{body_text}"
+            elif block.name == "send_email":
+                delegated_to.append("Email (sent)")
+                answer = emailer.send_email(
+                    block.input.get("to", ""),
+                    block.input.get("subject", ""),
+                    block.input.get("body", ""),
+                )
             elif agent_key is None:
                 answer = f"Unknown tool: {block.name}"
             else:
@@ -264,7 +303,7 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    result = run_main_brain(req.message, req.history, enable_search=True)
+    result = run_main_brain(req.message, req.history, enable_search=True, persona="owner")
     # Persist the exchange to durable memory (Airtable) so questions and answers
     # are remembered forever, across devices and browser sessions.
     crm.save_turn("user", req.message)
@@ -289,13 +328,19 @@ def public_chat(req: ChatRequest) -> ChatResponse:
     """Customer-facing chat for the embeddable website widget. Not gated.
     Uses the public persona + limited tools (answer + capture leads)."""
     name = crm.get_setting(AGENT_NAME_KEY) or "the assistant"
-    return run_main_brain(req.message, req.history, build_public_prompt(name), PUBLIC_TOOLS)
+    return run_main_brain(req.message, req.history, build_public_prompt(name), PUBLIC_TOOLS, persona="public")
 
 
 @app.get("/widget")
 def widget() -> FileResponse:
     """Serve the public, embeddable chat widget (for the Wix site)."""
     return FileResponse("static/widget.html")
+
+
+@app.get("/privacy")
+def privacy() -> FileResponse:
+    """Public privacy notice, linked from the widget footer."""
+    return FileResponse("static/privacy.html")
 
 
 class TTSRequest(BaseModel):

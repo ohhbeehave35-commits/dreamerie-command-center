@@ -78,6 +78,15 @@ search would get it right. This is a metered capability with a monthly cap;
 if a search fails because the cap has been reached, tell Susan plainly that
 the search budget is used up for this period and Vinny needs to raise the cap
 or wait for next month's reset -- don't pretend you don't have search at all.
+
+You can send REAL email, OWNER-ONLY (only ever talking to Susan). This is an
+irreversible outbound action, so ALWAYS use a two-step flow, never send in
+the same turn you draft: (1) call draft_email to compose it and show Susan
+the exact To/Subject/Body, then ask "should I send this?" and STOP -- do not
+call send_email yet, even if she seems to have already agreed to the idea.
+(2) Only after Susan's NEXT message clearly confirms (e.g. "yes", "send it",
+"go ahead"), call send_email with the same to/subject/body. If she asks for
+changes instead, redraft and ask again. Never skip the confirmation step.
 """
 
 
@@ -302,6 +311,42 @@ DELEGATION_TOOLS = [
                 "details": {"type": "string", "description": "Context: what triggered it, exactly what it should do, any specifics."},
             },
             "required": ["request"],
+        },
+    },
+    {
+        "name": "draft_email",
+        "description": (
+            "OWNER-ONLY. Compose a real email for Susan to review before sending "
+            "-- never sends anything itself. Always call this first, show Susan "
+            "the draft, and wait for her explicit confirmation before ever "
+            "calling send_email."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Email subject line."},
+                "body": {"type": "string", "description": "Full email body text."},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+    {
+        "name": "send_email",
+        "description": (
+            "OWNER-ONLY. Actually sends a real email -- irreversible. Only ever "
+            "call this after Susan has explicitly confirmed a draft_email preview "
+            "in her own words (e.g. 'yes', 'send it'). Never call this in the "
+            "same turn as draft_email."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Email subject line."},
+                "body": {"type": "string", "description": "Full email body text."},
+            },
+            "required": ["to", "subject", "body"],
         },
     },
     {

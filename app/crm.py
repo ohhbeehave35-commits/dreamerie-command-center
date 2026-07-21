@@ -261,6 +261,26 @@ def increment_search_count(n: int = 1) -> int:
     return total
 
 
+def _chat_usage_key(persona: str) -> str:
+    """Monthly bucket key per persona, e.g. 'chat_count_public_2026-07'."""
+    return f"chat_count_{persona}_" + datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def get_chat_count(persona: str) -> int:
+    """How many chat turns this persona has used this calendar month."""
+    try:
+        return int(get_setting(_chat_usage_key(persona), "0") or 0)
+    except ValueError:
+        return 0
+
+
+def increment_chat_count(persona: str, n: int = 1) -> int:
+    """Add `n` to this persona's monthly chat count and return the new total."""
+    total = get_chat_count(persona) + n
+    set_setting(_chat_usage_key(persona), str(total))
+    return total
+
+
 def create_lead(name="", phone="", email="", business="", request="",
                 source="", notes="", status="New") -> str:
     """Create a lead record. Returns a short human-readable confirmation."""
