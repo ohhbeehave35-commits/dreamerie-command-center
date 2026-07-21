@@ -47,6 +47,18 @@ XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 XAI_VOICE = os.environ.get("XAI_VOICE", "eve")
 client = Anthropic()  # reads ANTHROPIC_API_KEY from env
 
+# Owner-only, metered live web search. Never added to PUBLIC_TOOLS -- the
+# customer-facing widget can never trigger a search. Cap resets monthly (see
+# crm._search_usage_key); once hit, the assistant is told to say so plainly.
+WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search"}
+SEARCH_MONTHLY_CAP = int(os.environ.get("SEARCH_MONTHLY_CAP", "50"))
+SEARCH_CAPPED_NOTE = (
+    "\n\nNOTE: the web search budget for this billing period has been reached. "
+    "If asked to search, do not attempt it -- tell Susan plainly that search is "
+    "capped for now and Vinny needs to raise SEARCH_MONTHLY_CAP or wait for "
+    "next month's reset."
+)
+
 app = FastAPI(title="The Dreamerie Command Center")
 app.add_middleware(
     CORSMiddleware,
@@ -129,23 +141,61 @@ def call_sub_agent(agent_key: str, query: str) -> str:
     return "".join(block.text for block in resp.content if block.type == "text")
 
 
+def _count_web_searches(content) -> int:
+    """Count server-executed web_search calls in a response's content blocks."""
+    return sum(
+        1 for b in content
+        if getattr(b, "type", "") == "server_tool_use" and getattr(b, "name", "") == "web_search"
+    )
+
+
+def run_web_search(query: str) -> tuple:
+    """Run one live web search via Anthropic's server-side search tool.
+    Returns (answer_text, number_of_searches_actually_performed)."""
+    resp = client.messages.create(
+        model=MODEL,
+        max_tokens=1024,
+        tools=[WEB_SEARCH_TOOL],
+        messages=[{"role": "user", "content": f"Search the web and answer concisely: {query}"}],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    return text, _count_web_searches(resp.content)
+
+
 def run_main_brain(user_message: str, history: List[Dict[str, str]],
                    system_prompt: str = None,
-                   tools=DELEGATION_TOOLS) -> ChatResponse:
+                   tools=DELEGATION_TOOLS, enable_search: bool = False) -> ChatResponse:
     if system_prompt is None:
         system_prompt = build_main_brain_prompt(crm.get_setting(AGENT_NAME_KEY) or None)
     messages = list(history) + [{"role": "user", "content": user_message}]
     delegated_to: List[str] = []
+
+    # Owner-only, metered search. Never enabled for the public widget -- that
+    # caller simply never passes enable_search=True.
+    search_available = False
+    effective_tools = list(tools)
+    effective_system_prompt = system_prompt
+    if enable_search:
+        if crm.get_search_count() < SEARCH_MONTHLY_CAP:
+            search_available = True
+            effective_tools = effective_tools + [WEB_SEARCH_TOOL]
+        else:
+            effective_system_prompt = system_prompt + SEARCH_CAPPED_NOTE
 
     # Loop to allow multiple rounds of tool use (e.g. two sub-agents needed).
     for _ in range(4):
         resp = client.messages.create(
             model=MODEL,
             max_tokens=1024,
-            system=system_prompt,
-            tools=tools,
+            system=effective_system_prompt,
+            tools=effective_tools,
             messages=messages,
         )
+
+        n_searches = _count_web_searches(resp.content)
+        if n_searches:
+            crm.increment_search_count(n_searches)
+            delegated_to.append("Web Search")
 
         if resp.stop_reason != "tool_use":
             final_text = "".join(b.text for b in resp.content if b.type == "text")
@@ -178,7 +228,25 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                 answer = f"Unknown tool: {block.name}"
             else:
                 delegated_to.append(SUB_AGENTS[agent_key]["name"])
-                answer = call_sub_agent(agent_key, block.input.get("query", user_message))
+                query = block.input.get("query", user_message)
+                answer = call_sub_agent(agent_key, query)
+                if answer.strip().startswith("NEEDS_SEARCH:"):
+                    search_query = answer.split("NEEDS_SEARCH:", 1)[1].strip()
+                    if search_available and crm.get_search_count() < SEARCH_MONTHLY_CAP:
+                        search_text, used = run_web_search(search_query)
+                        if used:
+                            crm.increment_search_count(used)
+                            delegated_to.append("Web Search")
+                        answer = call_sub_agent(
+                            agent_key,
+                            f"{query}\n\nHere is current web search information you can use:\n{search_text}",
+                        )
+                    else:
+                        answer = (
+                            "I don't have live search access for that right now (the search "
+                            "budget is capped for this period) -- Vinny will need to raise "
+                            "the cap or check back next cycle."
+                        )
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -196,7 +264,7 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    result = run_main_brain(req.message, req.history)
+    result = run_main_brain(req.message, req.history, enable_search=True)
     # Persist the exchange to durable memory (Airtable) so questions and answers
     # are remembered forever, across devices and browser sessions.
     crm.save_turn("user", req.message)

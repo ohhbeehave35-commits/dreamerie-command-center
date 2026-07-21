@@ -13,6 +13,8 @@ instead of crashing.
 """
 
 import os
+from datetime import datetime, timezone
+
 import httpx
 
 AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN", "")
@@ -237,6 +239,26 @@ def set_setting(key: str, value: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _search_usage_key() -> str:
+    """Monthly bucket key, e.g. 'search_count_2026-07', so the cap resets each month."""
+    return "search_count_" + datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def get_search_count() -> int:
+    """How many web searches have been used this calendar month."""
+    try:
+        return int(get_setting(_search_usage_key(), "0") or 0)
+    except ValueError:
+        return 0
+
+
+def increment_search_count(n: int = 1) -> int:
+    """Add `n` to this month's search count and return the new total."""
+    total = get_search_count() + n
+    set_setting(_search_usage_key(), str(total))
+    return total
 
 
 def create_lead(name="", phone="", email="", business="", request="",
