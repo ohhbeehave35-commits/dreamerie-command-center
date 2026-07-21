@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stinger Command Center</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+  html, body { margin: 0; height: 100%; background: #030304; overflow: hidden; }
+  * { box-sizing: border-box; }
+  a { color: #d4af37; }
+  a:hover { color: #f4d47a; }
+  #micBtn.listening { box-shadow: 0 0 0 2px #8fb0c4, 0 0 18px rgba(143,176,196,0.7); }
+  @keyframes flowdash { to { stroke-dashoffset: -22; } }
+</style>
+</head>
+<body>
+
+<div id="stage" style="position:relative;width:1440px;height:900px;font-family:Inter,sans-serif;color:#e6e2d6;overflow:hidden;background:radial-gradient(ellipse at 50% 44%,#0d0d10,#030304 74%)">
+
+  <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:0;opacity:0.06;mix-blend-mode:screen;pointer-events:none"><img src="/static/logo.webp" style="width:69%;height:69%;object-fit:contain"></div>
+
+  <img id="brainCtr" src="/static/braincenter.webp" style="display:none" alt="">
+  <img id="brainAgt" src="/static/brainagent.webp" style="display:none" alt="">
+
+  <canvas id="brainCanvas" style="position:absolute;inset:0;width:100%;height:100%;z-index:1"></canvas>
+
+  <!-- top bar -->
+  <div style="position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:16px;padding:16px 26px;z-index:3">
+    <div style="width:88px;height:88px;border-radius:10px;overflow:hidden;flex:none;box-shadow:0 0 0 1px rgba(212,175,55,0.4)"><img src="/static/logo.webp" style="width:88px;height:88px;object-fit:contain"></div>
+    <div style="margin-right:auto;display:flex;flex-direction:column;gap:2px">
+      <div style="font-weight:700;font-size:23px;letter-spacing:0.16em;background:linear-gradient(180deg,#f4d47a,#c79a2b);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent">THE DREAMERIE</div>
+      <div style="font-weight:500;font-size:12px;letter-spacing:0.42em;color:#c8ccd2">COMMAND CENTER</div>
+    </div>
+    <a href="#" id="navCommand" style="text-decoration:none;font-size:13px;font-weight:500;cursor:pointer">Command</a>
+    <a href="#" id="navFlow" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Flow</a>
+    <a href="#" id="navAgents" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Agents</a>
+    <a href="#" id="navTasks" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Tasks</a>
+    <a href="#" id="navHistory" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">History</a>
+    <a href="/static/basic.html" style="color:#9aa0aa;text-decoration:none;font-size:13px">Basic UI</a>
+    <div style="width:32px;height:32px;border-radius:50%;background:#141310;box-shadow:0 0 0 1px rgba(212,175,55,0.5);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#d4af37">V</div>
+  </div>
+
+  <!-- left stat rail -->
+  <div style="position:absolute;top:118px;left:26px;display:flex;flex-direction:column;gap:14px;z-index:3">
+    <div><div style="font-size:24px;font-weight:700;line-height:1;color:#e6cf88">4</div><div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#7d7c74">Agents online</div></div>
+    <div><div style="font-size:24px;font-weight:700;line-height:1;color:#c8ccd2" id="reqCount">0</div><div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#7d7c74">Requests handled</div></div>
+    <div><div style="font-size:24px;font-weight:700;line-height:1;color:#e6cf88" id="apiState">&mdash;</div><div id="apiStateLabel" style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#7d7c74">Annabelle</div></div>
+  </div>
+
+  <!-- voice waveforms -->
+  <div style="position:absolute;left:26px;bottom:26px;width:300px;display:flex;flex-direction:column;gap:12px;z-index:3">
+    <div style="background:rgba(12,11,9,0.72);backdrop-filter:blur(6px);border:1px solid rgba(200,204,210,0.14);border-radius:12px;padding:12px 14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#9aa0aa">Listening</span>
+        <span id="listenState" style="font-size:9px;letter-spacing:0.1em;color:#8fb0c4">STANDBY</span>
+      </div>
+      <div id="listenBars" style="display:flex;align-items:center;justify-content:space-between;gap:2px;height:30px"></div>
+    </div>
+    <div style="background:rgba(12,11,9,0.72);backdrop-filter:blur(6px);border:1px solid rgba(212,175,55,0.24);border-radius:12px;padding:12px 14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#e6cf88">Speaking</span>
+        <span id="speakState" style="font-size:9px;letter-spacing:0.1em;color:#7d7c74">IDLE</span>
+      </div>
+      <div id="speakBars" style="display:flex;align-items:center;justify-content:space-between;gap:2px;height:30px"></div>
+    </div>
+  </div>
+
+  <!-- routing + comm log -->
+  <div style="position:absolute;top:120px;right:26px;width:320px;display:flex;flex-direction:column;gap:18px;z-index:3">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-size:13px;font-weight:500;letter-spacing:0.14em;text-transform:uppercase;color:#b99a44">Command routing</div>
+      <div id="routeLine" style="font-size:18px;font-weight:400;color:#e6e2d6;line-height:1.45;min-height:52px">Annabelle standing by.</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:13px;font-weight:500;letter-spacing:0.14em;text-transform:uppercase;color:#9aa0aa">Communication log</div>
+      <div id="commLog" style="display:flex;flex-direction:column;gap:9px"></div>
+    </div>
+  </div>
+
+  <!-- chat panel -->
+  <div style="position:absolute;left:calc(50% + 60px);bottom:26px;transform:translateX(-50%);width:720px;z-index:3">
+    <div id="chatPanel" style="background:rgba(12,11,9,0.82);backdrop-filter:blur(8px);border:1px solid rgba(212,175,55,0.3);border-radius:14px;padding:16px 20px;font-size:15px;line-height:1.55;color:#e6e2d6;max-height:220px;overflow-y:auto;white-space:pre-wrap">
+      Annabelle online. All agents standing by &mdash; ask me anything about Ohh Beehave or Stinger Industries, by voice or by text.
+    </div>
+    <form id="chatForm" style="display:flex;gap:10px;margin-top:12px">
+      <button type="button" id="micBtn" title="Hold a conversation by voice" style="font-family:Inter,sans-serif;font-size:17px;background:#141310;border:1px solid rgba(143,176,196,0.5);color:#8fb0c4;border-radius:10px;padding:8px 16px;cursor:pointer">&#127908;</button>
+      <input id="chatInput" placeholder="Ask Annabelle anything&hellip;" autocomplete="off" style="flex:1;min-height:44px;padding:8px 14px;font-size:14px;color:#e6e2d6;background:rgba(20,19,16,0.85);border:1px solid rgba(200,204,210,0.16);border-radius:10px">
+      <button type="submit" id="sendBtn" style="font-family:Inter,sans-serif;font-weight:600;font-size:14px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:10px;padding:8px 22px;cursor:pointer">Send</button>
+    </form>
+  </div>
+
+  <!-- overlay panels (Agents / Tasks) -->
+  <div id="panelAgents" style="display:none;position:absolute;top:120px;left:50%;transform:translateX(-50%);width:640px;max-height:620px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.94);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.35);border-radius:16px;padding:24px 28px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-weight:700;font-size:16px;letter-spacing:0.14em;color:#e6cf88">AGENT NETWORK</div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:22px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="font-size:13px;color:#9aa0aa;margin-bottom:18px;line-height:1.5">Annabelle routes your request to the specialist below that fits it, then merges their answer. Three are wired to live business knowledge; the rest are the supporting network. Click the pencil to rename any agent.</div>
+    <div id="agentList" style="display:flex;flex-direction:column;gap:10px"></div>
+  </div>
+
+  <div id="panelTasks" style="display:none;position:absolute;top:120px;left:50%;transform:translateX(-50%);width:640px;max-height:620px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.94);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.35);border-radius:16px;padding:24px 28px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-weight:700;font-size:16px;letter-spacing:0.14em;color:#e6cf88">SESSION ACTIVITY</div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:22px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px">
+      <div style="font-size:13px;color:#9aa0aa;line-height:1.5;flex:1">Every request you send and every agent consulted, newest first. Annabelle remembers your conversation between visits on this device.</div>
+      <button id="clearMemBtn" style="flex:none;background:rgba(224,164,143,0.12);border:1px solid rgba(224,164,143,0.4);color:#e0a48f;border-radius:8px;padding:7px 12px;font-size:12px;cursor:pointer">Clear memory</button>
+    </div>
+    <div id="taskList" style="display:flex;flex-direction:column;gap:8px"><div style="color:#6f6e66;font-size:13px">No activity yet — ask Annabelle something.</div></div>
+  </div>
+
+  <!-- Flow panel: live map of Annabelle's agent network (n8n-style) -->
+  <div id="panelFlow" style="display:none;position:absolute;top:110px;left:24px;right:24px;bottom:24px;z-index:5;background:rgba(8,8,10,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;overflow:hidden">
+    <div style="position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:16px 22px;z-index:2">
+      <div>
+        <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">WORKFLOW</div>
+        <div style="font-size:12px;color:#7d7c74;margin-top:2px">How Annabelle routes a request — live map</div>
+      </div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:24px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div id="flowCanvas" style="position:absolute;inset:0;top:0"></div>
+  </div>
+
+  <!-- History panel: durable conversation memory (from Airtable) -->
+  <div id="panelHistory" style="display:none;position:absolute;top:110px;left:50%;transform:translateX(-50%);width:680px;max-height:640px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">HISTORY</div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:24px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="font-size:12px;color:#7d7c74;margin-bottom:16px">Everything Annabelle remembers — saved forever, on every device.</div>
+    <div id="historyList" style="display:flex;flex-direction:column;gap:12px"><div style="color:#6f6e66;font-size:13px">Loading…</div></div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  // Network nodes: the SAFE draft-mode roster from the Neural Command design.
+  const agents = [
+    { n: 'Discovery Intake', col: '#d8dde3' }, { n: 'Case Orchestrator', col: '#5b9bd5' },
+    { n: 'Council Review', col: '#e6c25a' }, { n: 'Diagnose & Gaps', col: '#c9a13b' },
+    { n: 'Performance Audit', col: '#e0a48f' }, { n: 'Roadmap & Proposal', col: '#c9713f' },
+    { n: 'Workflow Builder', col: '#a488d9' }, { n: 'Content + Media', col: '#e8912e' },
+    { n: 'Marketing Lead Gen', col: '#4fb58a' }, { n: 'Reporting & KPI', col: '#4cc4d0' },
+    { n: 'Strategy Consulting', col: '#c7ccd4' }, { n: 'Safety Gate', col: '#b08046' },
+    { n: 'Evidence Monitor', col: '#59b06a' }, { n: 'Practice Lab', col: '#7f88c4' },
+    { n: 'Approval Gate', col: '#d9c48a' }, { n: 'Activity Log', col: '#8f97a2' },
+  ];
+  // Real backend agents -> which node lights up when they're consulted.
+  const realAgentVisual = {
+    'Dreamerie Shop Agent': { orbit: 'Discovery Intake',   col: '#c98fe0' },
+    'Suzy D Agent':         { orbit: 'Strategy Consulting',col: '#e85fa0' },
+  };
+
+  // ---------- Editable names (persist per-device in localStorage) ----------
+  // Center brain name + any renamed network nodes. Edit them in the Agents panel.
+  const loadNames = () => { try { return JSON.parse(localStorage.getItem('stinger_names') || '{}'); } catch (e) { return {}; } };
+  const saveNames = (o) => { try { localStorage.setItem('stinger_names', JSON.stringify(o)); } catch (e) {} };
+  let nameOverrides = loadNames();
+  // No hardcoded default -- Susan names this herself on first use (server-side,
+  // via chat). Show a friendly placeholder until /api/agent-name resolves.
+  let CENTER_NAME = nameOverrides.__center || 'Your Assistant';
+  fetch('/api/agent-name').then(r => r.json()).then(d => {
+    if (d && d.name && !nameOverrides.__center) {
+      CENTER_NAME = d.name; nameOverrides.__center = d.name; saveNames(nameOverrides);
+      applyCenterName(); if (typeof buildAgentPanel === 'function') buildAgentPanel();
+    }
+  }).catch(() => {});
+  // Apply saved node renames to the roster's display names.
+  agents.forEach(a => { a.orig = a.n; if (nameOverrides[a.orig]) a.n = nameOverrides[a.orig]; });
+
+  const _rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const _metal = (hex) => { const c = _rgb(hex); return { c: c, glow: c.join(',') }; };
+  const rv = () => { const u = Math.random()*2-1, th = Math.random()*6.283, s = Math.sqrt(1-u*u); return [s*Math.cos(th), s*Math.sin(th), u]; };
+
+  const genBrain = (count, RX, RY, RZ) => {
+    const pts = [];
+    for (let i = 0; i < count; i++) {
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const th = (Math.random()*Math.PI) - Math.PI/2, rr = Math.sqrt(Math.random());
+      const lobeRX = RX*0.5, fissure = RX*0.03;
+      const ox = Math.cos(th)*rr, oy = Math.sin(th)*rr;
+      let x = side*(fissure + ox*lobeRX), y = oy*RY;
+      x *= (1 - 0.10*Math.max(0, y/RY));
+      const g = 1 + 0.05*Math.sin(oy*9) + 0.04*Math.sin(ox*11);
+      x *= g; y *= (1 + 0.03*Math.sin(ox*8));
+      let z = (Math.random()*2-1)*RZ*(0.45+0.55*Math.cos(th))*(1-0.3*rr);
+      x += (Math.random()-0.5)*RX*0.03; y += (Math.random()-0.5)*RY*0.03;
+      pts.push({ p: [x,y,z], ph: Math.random()*6.28, side: x>=0?1:-1, tw: Math.random() });
+    }
+    for (let i = 0; i < 7; i++) pts.push({ p: [(Math.random()-0.5)*RX*0.07, -RY*0.96 - i*7, (Math.random()-0.5)*RZ*0.3], ph: Math.random()*6.28, side: 0, tw: Math.random() });
+    const edges = [], seen = {};
+    for (let i = 0; i < pts.length; i++) {
+      const d = [];
+      for (let j = 0; j < pts.length; j++) { if (i===j) continue; const a = pts[i].p, b = pts[j].p; d.push([(a[0]-b[0])**2+(a[1]-b[1])**2+(a[2]-b[2])**2, j]); }
+      d.sort((m,n) => m[0]-n[0]);
+      const K = count > 100 ? 5 : 4;
+      for (let k = 0; k < K; k++) { const j = d[k][1], key = i<j?i+'_'+j:j+'_'+i; if (!seen[key]) { seen[key]=1; edges.push([i,j]); } }
+    }
+    return { pts, edges, fires: [] };
+  };
+
+  const cv = document.getElementById('brainCanvas');
+  const ctx = cv.getContext('2d');
+  const readout = document.getElementById('routeLine');
+  const commLog = document.getElementById('commLog');
+  const listenBox = document.getElementById('listenBars');
+  const speakBox = document.getElementById('speakBars');
+  const listenState = document.getElementById('listenState');
+  const speakState = document.getElementById('speakState');
+  const reqCountEl = document.getElementById('reqCount');
+  const apiStateEl = document.getElementById('apiState');
+  const chatPanel = document.getElementById('chatPanel');
+  const chatForm = document.getElementById('chatForm');
+  const chatInput = document.getElementById('chatInput');
+  const micBtn = document.getElementById('micBtn');
+  const sendBtn = document.getElementById('sendBtn');
+
+  const BLUE = _metal('#3f9be0'), GOLDC = _metal('#e6c65e');
+  const brain = genBrain(250, 200, 108, 66);
+  const AR = 360, N = agents.length;
+  agents.forEach((a, i) => {
+    const y = 1-(i/(N-1))*2, r = Math.sqrt(1-y*y), th = i*2.399963;
+    a.pos = [Math.cos(th)*r*AR, y*AR*0.82, Math.sin(th)*r*AR];
+    a.ph = Math.random()*6.28; a.flare = 0; a.opt = _metal(a.col);
+    a.cloud = genBrain(44, 48, 34, 20);
+  });
+
+  // ---------- Brain image sprites (from the Neural Command design) ----------
+  // The webp images ship with real transparency, so no background knockout is
+  // needed. Center brain draws straight from the <img>; agent brains are tinted
+  // with canvas blend modes only — no getImageData/putImageData round-trip,
+  // which some GPU states silently blank out.
+  const ctrImg = document.getElementById('brainCtr');
+  const agtImg = document.getElementById('brainAgt');
+  let imgReady = false, spriteCenter = null;
+  const buildSprites = () => {
+    try {
+      if (!ctrImg.naturalWidth || !agtImg.naturalWidth) return;
+      spriteCenter = ctrImg;
+      const w = 240, h = Math.round(240 * agtImg.naturalHeight / agtImg.naturalWidth);
+      agents.forEach(a => {
+        const cnv = document.createElement('canvas'); cnv.width = w; cnv.height = h;
+        const g = cnv.getContext('2d');
+        g.drawImage(agtImg, 0, 0, w, h);
+        g.globalCompositeOperation = 'color';          // recolor, keep luminance
+        g.fillStyle = a.col; g.fillRect(0, 0, w, h);
+        g.globalCompositeOperation = 'destination-in'; // restore transparency
+        g.drawImage(agtImg, 0, 0, w, h);
+        g.globalCompositeOperation = 'source-over';
+        a.tint = cnv;
+      });
+      imgReady = true;
+    } catch (e) { imgReady = false; console.error('buildSprites failed', e); }
+  };
+  // Debug hook: window.__ccDebug() reports sprite pipeline state.
+  window.__ccDebug = () => ({
+    imgReady,
+    centerIsImg: spriteCenter === ctrImg,
+    tintCount: agents.filter(a => a.tint).length,
+    imgs: [ctrImg.naturalWidth, agtImg.naturalWidth],
+  });
+  let _imgN = 0; const _tryBuild = () => { if (++_imgN >= 2) buildSprites(); };
+  [ctrImg, agtImg].forEach(im => { if (im && im.complete && im.naturalWidth) _tryBuild(); else if (im) im.addEventListener('load', _tryBuild); });
+
+  let yaw = 0.35, pitch = -0.18, camDist = 900, focal = 820;
+  let dragging = false, lpx = 0, lpy = 0, autoRot = true;
+  const onMove = (e) => { if (!dragging) return; yaw += (e.clientX-lpx)*0.006; pitch = Math.max(-1.45, Math.min(1.45, pitch + (e.clientY-lpy)*0.006)); lpx = e.clientX; lpy = e.clientY; };
+  const onUp = () => { dragging = false; cv.style.cursor = 'grab'; };
+  const onDownH = (e) => { dragging = true; autoRot = false; lpx = e.clientX; lpy = e.clientY; cv.style.cursor = 'grabbing'; };
+  const onWheelH = (e) => { e.preventDefault(); camDist = Math.max(120, Math.min(2200, camDist + e.deltaY*0.7)); };
+  const onReset = () => { camDist = 900; yaw = 0.35; pitch = -0.18; autoRot = true; };
+  cv.style.cursor = 'grab';
+  cv.addEventListener('pointerdown', onDownH);
+  cv.addEventListener('wheel', onWheelH, { passive: false });
+  cv.addEventListener('dblclick', onReset);
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+
+  let W = cv.clientWidth, H = cv.clientHeight, cx = W*0.5, cy = H*0.5;
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const resize = () => { W = cv.clientWidth; H = cv.clientHeight; cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); cx = W*0.5; cy = H*0.5; };
+  resize();
+
+  // Scale the fixed 1440x900 stage to fit the window, centered.
+  const stage = document.getElementById('stage');
+  const fit = () => {
+    const s = Math.min(window.innerWidth/1440, window.innerHeight/900);
+    stage.style.transformOrigin = 'top left';
+    stage.style.transform = 'translate(' + Math.max(0,(window.innerWidth-1440*s)/2) + 'px,' + Math.max(0,(window.innerHeight-900*s)/2) + 'px) scale(' + s + ')';
+  };
+  fit();
+  window.addEventListener('resize', () => { fit(); resize(); });
+
+  const project = (p) => {
+    const cyw = Math.cos(yaw), syw = Math.sin(yaw);
+    let x = p[0]*cyw - p[2]*syw, z = p[0]*syw + p[2]*cyw, y = p[1];
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    let y2 = y*cp - z*sp, z2 = y*sp + z*cp;
+    const depth = z2 + camDist, s = focal/Math.max(depth, 30);
+    return { x: cx + x*s, y: cy + y2*s, s, depth };
+  };
+
+  const NB = 26; const lBars = [], sBars = [];
+  for (let i = 0; i < NB; i++) {
+    const lb = document.createElement('div'); lb.style.cssText = 'flex:none;width:3px;background:linear-gradient(180deg,#c8ccd2,#7f8790);border-radius:1px;height:4px'; listenBox.appendChild(lb); lBars.push(lb);
+    const sb = document.createElement('div'); sb.style.cssText = 'flex:none;width:3px;background:linear-gradient(180deg,#f4d47a,#b8912f);border-radius:1px;height:3px'; speakBox.appendChild(sb); sBars.push(sb);
+  }
+
+  // ---------- REAL state (driven by actual voice + API activity) ----------
+  let listening = false;
+  let ttsActive = false;
+  let thinking = false;
+  let requests = 0;
+
+  // ---------- Conversation memory (persists in this browser) ----------
+  // Annabelle remembers past chats after you close the tab. Kept to the last
+  // 40 messages so her context stays fast. (Cross-device memory comes with the
+  // Airtable/CRM step.)
+  const HISTORY_KEY = 'stinger_history';
+  let history = [];
+  try { history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch (e) { history = []; }
+  const saveHistory = () => {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-40))); } catch (e) {}
+  };
+  const clearHistory = () => {
+    history = [];
+    try { localStorage.removeItem(HISTORY_KEY); } catch (e) {}
+    chatPanel.textContent = 'Memory cleared. Fresh start — ask Annabelle anything.';
+    chatPanel.style.color = '#e6e2d6';
+    readout.textContent = CENTER_NAME + ' standing by.';
+  };
+  // Show the last thing she said when you reopen, so it's not blank.
+  const showLastReply = () => {
+    if (history.length) {
+      const lastA = [...history].reverse().find(m => m.role === 'assistant');
+      if (lastA && chatPanel) chatPanel.textContent = lastA.content;
+    }
+  };
+  showLastReply();
+  // Durable memory: pull the full conversation from the server (Airtable) so she
+  // remembers across devices and browser sessions, not just this browser.
+  fetch('/api/history?limit=40').then(r => r.json()).then(d => {
+    if (d && d.history && d.history.length) {
+      history = d.history;
+      saveHistory();
+      showLastReply();
+    }
+  }).catch(() => {});
+
+  const logRow = (color, who, text) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:9px;align-items:baseline;font-size:15px;font-weight:600;line-height:1.35;opacity:0;transition:opacity .4s';
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    row.innerHTML = '<span style="color:#6f6e66;font-variant-numeric:tabular-nums">' + time + '</span><span style="color:' + color + '">' + who + '</span><span style="color:#95928a;flex:1">' + text + '</span>';
+    commLog.prepend(row);
+    requestAnimationFrame(() => row.style.opacity = '1');
+    while (commLog.children.length > 6) commLog.removeChild(commLog.lastChild);
+    // Mirror into the Tasks panel (uncapped, full session history).
+    const tl = document.getElementById('taskList');
+    if (tl) {
+      if (tl.dataset.empty !== 'no') { tl.innerHTML = ''; tl.dataset.empty = 'no'; }
+      const trow = document.createElement('div');
+      trow.style.cssText = 'display:flex;gap:9px;align-items:baseline;font-size:14px;line-height:1.35;padding:6px 0;border-bottom:1px solid rgba(200,204,210,0.08)';
+      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      trow.innerHTML = '<span style="color:#6f6e66;font-variant-numeric:tabular-nums">' + time + '</span><span style="color:' + color + ';font-weight:600">' + who + '</span><span style="color:#95928a;flex:1">' + text + '</span>';
+      tl.prepend(trow);
+    }
+  };
+
+  const qb3 = (a, b, c, t) => { const u = 1-t; return [u*u*a[0]+2*u*t*b[0]+t*t*c[0], u*u*a[1]+2*u*t*b[1]+t*t*c[1], u*u*a[2]+2*u*t*b[2]+t*t*c[2]]; };
+  let pulses = [];
+  const pulseTo = (agent) => {
+    const mid = [agent.pos[0]/2, agent.pos[1]/2, agent.pos[2]/2], off = rv();
+    pulses.push({ a: agent, ctrl: [mid[0]+off[0]*70, mid[1]+off[1]*70, mid[2]+off[2]*70], t: 0, sp: 0.018 + Math.random()*0.005 });
+  };
+  // Ambient: occasional silent pulses keep the network alive; never fake log entries.
+  let ambientTimer = 0, ambientEvery = 180;
+
+  // ---------- Text-to-speech: speak sentence-by-sentence with prefetch ----------
+  // First sentence plays within ~1-2s while the rest synthesize in the background,
+  // so there's no long wait and no choppiness from one huge audio file.
+  let currentAudio = null;
+  let ttsAbort = null;
+  const stopSpeaking = () => {
+    if (ttsAbort) { ttsAbort.abort(); ttsAbort = null; }
+    if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    ttsActive = false;
+  };
+  const speakFallback = (clean) => {
+    if (!('speechSynthesis' in window)) return;
+    const utter = new SpeechSynthesisUtterance(clean);
+    utter.onstart = () => { ttsActive = true; };
+    utter.onend = () => { ttsActive = false; };
+    utter.onerror = () => { ttsActive = false; };
+    window.speechSynthesis.speak(utter);
+  };
+  // Break a reply into speakable chunks (~one or two sentences, <=200 chars).
+  const chunkText = (text) => {
+    const clean = text.replace(/[#*_`>]/g, '').replace(/\s+/g, ' ').trim();
+    const parts = clean.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [clean];
+    const out = []; let cur = '';
+    for (const p of parts) {
+      const s = p.trim(); if (!s) continue;
+      if (cur && (cur + ' ' + s).length > 200) { out.push(cur); cur = s; }
+      else cur = cur ? cur + ' ' + s : s;
+    }
+    if (cur) out.push(cur);
+    return out;
+  };
+  const fetchClip = async (text, signal) => {
+    const r = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }), signal });
+    if (!r.ok) throw new Error('tts ' + r.status);
+    return URL.createObjectURL(await r.blob());
+  };
+  const playClip = (url, abort) => new Promise((resolve) => {
+    const a = new Audio(url); currentAudio = a; a.volume = 1.0;
+    const finish = () => { URL.revokeObjectURL(url); resolve(); };
+    a.onended = finish; a.onerror = finish;
+    if (abort.signal.aborted) { finish(); return; }
+    abort.signal.addEventListener('abort', () => { try { a.pause(); } catch (e) {} finish(); }, { once: true });
+    a.play().catch(() => finish());
+  });
+  const speak = async (text) => {
+    stopSpeaking();
+    const chunks = chunkText(text);
+    if (!chunks.length) return;
+    const abort = new AbortController();
+    ttsAbort = abort; ttsActive = true;
+    try {
+      let nextP = fetchClip(chunks[0], abort.signal);   // start first immediately
+      for (let i = 0; i < chunks.length; i++) {
+        let url;
+        try { url = await nextP; } catch (e) {
+          if (i === 0 && !abort.signal.aborted) speakFallback(text.replace(/[#*_`]/g, ''));
+          break;
+        }
+        if (abort.signal.aborted) break;
+        if (i + 1 < chunks.length) nextP = fetchClip(chunks[i + 1], abort.signal).catch(() => null); // prefetch next
+        await playClip(url, abort);                     // play current, gapless into next
+        if (abort.signal.aborted) break;
+      }
+    } finally {
+      if (ttsAbort === abort) { ttsActive = false; ttsAbort = null; currentAudio = null; }
+    }
+  };
+
+  // ---------- Speech-to-text (press to start, press again to stop & send) ----------
+  const MIC_ICON = '&#127908;';   // 🎤
+  const STOP_ICON = '&#9209;';    // ⏹
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+  let finalTranscript = '';
+  let userStopping = false;       // true when the user intentionally clicked stop
+  if (SR) {
+    recognition = new SR();
+    recognition.continuous = true;      // keep listening through pauses
+    recognition.interimResults = true;  // show words as they're spoken
+    recognition.lang = 'en-US';
+    recognition.onresult = (ev) => {
+      let interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript;
+        if (ev.results[i].isFinal) finalTranscript += t + ' ';
+        else interim += t;
+      }
+      chatInput.value = (finalTranscript + interim).trim();
+    };
+    recognition.onend = () => {
+      // Chrome ends recognition on its own timeout; if the user didn't stop,
+      // restart so it truly keeps listening until they click stop.
+      if (listening && !userStopping) { try { recognition.start(); } catch (e) {} return; }
+      listening = false;
+      micBtn.classList.remove('listening');
+      micBtn.innerHTML = MIC_ICON;
+      listenState.textContent = 'STANDBY';
+      const text = chatInput.value.trim();
+      if (userStopping && text) chatForm.requestSubmit();
+      userStopping = false;
+    };
+    recognition.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return; // keep going
+      listening = false; userStopping = false;
+      micBtn.classList.remove('listening');
+      micBtn.innerHTML = MIC_ICON;
+      listenState.textContent = 'STANDBY';
+    };
+  } else {
+    micBtn.disabled = true;
+    micBtn.title = 'Speech recognition not supported in this browser — use Chrome';
+    micBtn.style.opacity = '0.4';
+  }
+  const startListening = () => {
+    if (!recognition || listening) return;
+    stopSpeaking();                       // don't listen while she's talking
+    finalTranscript = chatInput.value ? chatInput.value.trim() + ' ' : '';
+    listening = true; userStopping = false;
+    micBtn.classList.add('listening');
+    micBtn.innerHTML = STOP_ICON;
+    micBtn.title = 'Click to stop and send';
+    listenState.textContent = 'ACTIVE';
+    try { recognition.start(); } catch (e) {}
+  };
+  const stopListening = () => {
+    if (!listening) return;
+    userStopping = true;                  // onend will submit the full transcript
+    try { recognition.stop(); } catch (e) {}
+  };
+  micBtn.addEventListener('click', () => { listening ? stopListening() : startListening(); });
+
+  // ---------- Chat ----------
+  chatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = chatInput.value.trim();
+    if (!text || thinking) return;
+    stopSpeaking();                 // never let a new answer play over the last one
+    chatInput.value = '';
+    thinking = true;
+    sendBtn.disabled = true;
+    chatPanel.textContent = text;
+    chatPanel.style.color = '#9aa0aa';
+    readout.innerHTML = '<span style="color:#e6cf88">' + CENTER_NAME + '</span> — analyzing your request…';
+    logRow('#e6cf88', 'You', text.length > 60 ? text.slice(0, 60) + '…' : text);
+    history.push({ role: 'user', content: text });
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history: history.slice(0, -1) }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      chatPanel.textContent = data.reply;
+      chatPanel.style.color = '#e6e2d6';
+      history.push({ role: 'assistant', content: data.reply });
+      saveHistory();
+      requests++;
+      reqCountEl.textContent = requests;
+      apiStateEl.textContent = 'LIVE';
+
+      if (data.delegated_to && data.delegated_to.length) {
+        const shown = [];
+        data.delegated_to.forEach(name => {
+          const vis = realAgentVisual[name];
+          const orbitAgent = vis ? agents.find(a => a.n === vis.orbit) : agents[Math.floor(Math.random()*agents.length)];
+          if (orbitAgent) pulseTo(orbitAgent);
+          const short = name.replace(' Agent', '').replace(' Referral', '');
+          if (shown.indexOf(short) === -1) { shown.push(short); logRow(vis ? vis.col : '#c8ccd2', short, 'consulted — response merged'); }
+        });
+        readout.innerHTML = 'Routed through <span style="color:#e6cf88">' + shown.join('</span> + <span style="color:#e6cf88">') + '</span>.';
+      } else {
+        readout.innerHTML = '<span style="color:#e6cf88">' + CENTER_NAME + '</span> answered directly.';
+      }
+      speak(data.reply);
+    } catch (err) {
+      chatPanel.textContent = 'Trouble reaching ' + CENTER_NAME + ': ' + err.message + '. Is the server running?';
+      chatPanel.style.color = '#e0a48f';
+      readout.innerHTML = '<span style="color:#e0a48f">Link error</span> — check the server window.';
+      apiStateEl.textContent = 'DOWN';
+      history.pop();
+    } finally {
+      thinking = false;
+      sendBtn.disabled = false;
+    }
+  });
+
+  // ---------- Render loop ----------
+  const drawImg = (im, xp, yp, w, alpha) => { const iw = im.naturalWidth || im.width, ih = im.naturalHeight || im.height; const ww = w, hh = w * (ih / iw); ctx.globalAlpha = alpha; ctx.drawImage(im, xp-ww/2, yp-hh/2, ww, hh); ctx.globalAlpha = 1; };
+
+  const drawCloud = (cloud, c3, dual, opt) => {
+    const gold = dual ? BLUE : opt, silver = dual ? GOLDC : opt;
+    cloud.pts.forEach(nd => { nd._pr = project([ c3[0] + nd.p[0] + Math.sin(tNow*0.8+nd.ph)*2, c3[1] + nd.p[1] + Math.cos(tNow*0.7+nd.ph)*2, c3[2] + nd.p[2] + Math.sin(tNow*0.6+nd.ph)*2 ]); });
+    ctx.lineWidth = 1;
+    cloud.edges.forEach(e => {
+      const a = cloud.pts[e[0]]._pr, b = cloud.pts[e[1]]._pr;
+      const col = (dual && cloud.pts[e[0]].side > 0) ? silver : gold;
+      ctx.strokeStyle = 'rgba(' + col.glow + ',0.30)';
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    });
+    cloud.pts.forEach(nd => {
+      const pr = nd._pr, col = (dual && nd.side > 0) ? silver : gold;
+      const sh = 0.5 + 0.5*Math.sin(tNow*2.6 + nd.tw*6.28 + pr.x*0.01);
+      const w = 0.12 + 0.55*sh, c = col.c;
+      ctx.globalAlpha = 0.72 + 0.28*sh;
+      ctx.fillStyle = 'rgb(' + Math.round(c[0]+(255-c[0])*w) + ',' + Math.round(c[1]+(255-c[1])*w) + ',' + Math.round(c[2]+(255-c[2])*w) + ')';
+      ctx.beginPath(); ctx.arc(pr.x, pr.y, Math.max(0.6, 1.5*pr.s), 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+    cloud.fires.forEach(f => {
+      f.t += f.sp;
+      const a = cloud.pts[f.e[0]]._pr, b = cloud.pts[f.e[1]]._pr, col = (dual && cloud.pts[f.e[1]].side > 0) ? silver : gold;
+      const x = a.x + (b.x-a.x)*f.t, y = a.y + (b.y-a.y)*f.t, s = a.s + (b.s-a.s)*f.t;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 7*s); g.addColorStop(0, 'rgba(255,250,235,0.95)'); g.addColorStop(1, 'rgba(' + col.glow + ',0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 7*s, 0, 6.283); ctx.fill();
+    });
+    cloud.fires = cloud.fires.filter(f => f.t < 1);
+  };
+
+  // ---------- Nav panels ----------
+  const panelAgents = document.getElementById('panelAgents');
+  const panelTasks = document.getElementById('panelTasks');
+  const panelFlow = document.getElementById('panelFlow');
+  const panelHistory = document.getElementById('panelHistory');
+  const navCommand = document.getElementById('navCommand');
+  const navAgents = document.getElementById('navAgents');
+  const navTasks = document.getElementById('navTasks');
+  const navFlow = document.getElementById('navFlow');
+  const navHistory = document.getElementById('navHistory');
+  const showPanel = (p) => {
+    panelAgents.style.display = 'none'; panelTasks.style.display = 'none';
+    panelFlow.style.display = 'none'; panelHistory.style.display = 'none';
+    if (p) { p.style.display = 'block'; if (p === panelFlow) renderFlow(); if (p === panelHistory) renderHistory(); }
+  };
+  navCommand.addEventListener('click', (e) => { e.preventDefault(); showPanel(null); });
+  navAgents.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelAgents.style.display === 'block' ? null : panelAgents); });
+  navTasks.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelTasks.style.display === 'block' ? null : panelTasks); });
+  navFlow.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelFlow.style.display === 'block' ? null : panelFlow); });
+  navHistory.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelHistory.style.display === 'block' ? null : panelHistory); });
+  document.querySelectorAll('.panelClose').forEach(b => b.addEventListener('click', () => showPanel(null)));
+
+  // Render the durable conversation history (pulled fresh from the server each open).
+  function renderHistory() {
+    const el = document.getElementById('historyList');
+    el.innerHTML = '<div style="color:#6f6e66;font-size:13px">Loading…</div>';
+    fetch('/api/history?limit=60').then(r => r.json()).then(d => {
+      const h = (d && d.history) || [];
+      if (!h.length) { el.innerHTML = '<div style="color:#6f6e66;font-size:13px">No saved conversations yet — ask Annabelle something.</div>'; return; }
+      el.innerHTML = '';
+      h.forEach(m => {
+        const isUser = m.role === 'user';
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;flex-direction:column;gap:3px;' + (isUser ? 'align-items:flex-end' : 'align-items:flex-start');
+        row.innerHTML = '<div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:' + (isUser ? '#8f97a2' : '#c79a2b') + '">' + (isUser ? 'You' : CENTER_NAME) + '</div>' +
+          '<div style="max-width:82%;font-size:13.5px;line-height:1.45;color:#e6e2d6;background:' + (isUser ? 'rgba(200,204,210,0.08)' : 'rgba(230,201,136,0.09)') + ';border:1px solid ' + (isUser ? 'rgba(200,204,210,0.12)' : 'rgba(212,175,55,0.25)') + ';border-radius:12px;padding:9px 13px;white-space:pre-wrap">' + (m.content || '').replace(/</g, '&lt;') + '</div>';
+        el.appendChild(row);
+      });
+      el.scrollTop = el.scrollHeight;
+    }).catch(() => { el.innerHTML = '<div style="color:#e0a48f;font-size:13px">Couldn\'t load history.</div>'; });
+  }
+
+  // ---------- Flow: n8n-style map of Annabelle's agent network ----------
+  let flowBuilt = false;
+  function renderFlow() {
+    if (flowBuilt) return;
+    flowBuilt = true;
+    const cv = document.getElementById('flowCanvas');
+    // node: {id,x,y,w,h,title,sub,icon,col,kind}  (coords in a 1180x700 space)
+    const CX = 490; // Annabelle x
+    const N = {
+      you:  { x: 60,  y: 300, w: 150, h: 66, title: 'You', sub: 'voice or text', icon: '🎙️', col: '#c8ccd2' },
+      brain:{ x: CX,  y: 285, w: 210, h: 96, title: CENTER_NAME, sub: 'Main Brain · orchestrator', icon: '🧠', col: '#f4d47a', big: true },
+      reply:{ x: 980, y: 300, w: 150, h: 66, title: 'Reply', sub: 'spoken + on screen', icon: '💬', col: '#e6c368' },
+      shop: { x: 300, y: 470, w: 175, h: 64, title: 'The Dreamerie', sub: 'shop agent', icon: '🕯️', col: '#c98fe0' },
+      suzy: { x: 570, y: 555, w: 175, h: 64, title: 'Suzy D', sub: 'TikTok agent', icon: '👑', col: '#e85fa0' },
+      crm:  { x: 250, y: 155, w: 165, h: 64, title: 'CRM · Leads', sub: 'Airtable memory', icon: '🗂️', col: '#4cc4d0' },
+      voice:{ x: 620, y: 155, w: 165, h: 64, title: 'Voice', sub: 'Grok neural TTS', icon: '🔊', col: '#59b06a' },
+      mem:  { x: 790, y: 470, w: 165, h: 64, title: 'Memory', sub: 'conversation', icon: '💾', col: '#7f88c4' },
+    };
+    // edges: [from, to, solid?]
+    const E = [
+      ['you','brain',1], ['brain','reply',1],
+      ['brain','shop',0], ['brain','suzy',0],
+      ['brain','crm',0], ['brain','voice',0], ['brain','mem',0],
+    ];
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 1180 700');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+    const cxy = (n) => ({ x: n.x + n.w / 2, y: n.y + n.h / 2 });
+    E.forEach(([a, b, solid]) => {
+      const p1 = cxy(N[a]), p2 = cxy(N[b]);
+      const dx = (p2.x - p1.x) * 0.5;
+      const path = document.createElementNS(NS, 'path');
+      path.setAttribute('d', `M${p1.x},${p1.y} C${p1.x + dx},${p1.y} ${p2.x - dx},${p2.y} ${p2.x},${p2.y}`);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', solid ? 'rgba(212,175,55,0.55)' : 'rgba(150,160,175,0.35)');
+      path.setAttribute('stroke-width', solid ? '2.2' : '1.6');
+      if (!solid) path.setAttribute('stroke-dasharray', '5 6');
+      path.style.cssText = 'animation:flowdash 1.1s linear infinite';
+      svg.appendChild(path);
+    });
+    cv.appendChild(svg);
+    // node cards
+    Object.values(N).forEach(n => {
+      const d = document.createElement('div');
+      const pct = (v, tot) => (v / tot * 100) + '%';
+      d.style.cssText = 'position:absolute;left:' + pct(n.x, 1180) + ';top:' + pct(n.y, 700) +
+        ';width:' + pct(n.w, 1180) + ';height:' + pct(n.h, 700) +
+        ';display:flex;align-items:center;gap:9px;padding:0 12px;border-radius:12px;box-sizing:border-box;' +
+        'background:' + (n.big ? 'rgba(244,212,122,0.13)' : 'rgba(20,20,24,0.92)') +
+        ';border:1px solid ' + n.col + (n.big ? '' : '66') + ';box-shadow:0 6px 20px rgba(0,0,0,0.4)' +
+        (n.big ? ',0 0 30px ' + n.col + '44' : '');
+      d.innerHTML =
+        '<div style="width:34px;height:34px;flex:none;border-radius:9px;background:' + n.col + '22;display:flex;align-items:center;justify-content:center;font-size:18px">' + n.icon + '</div>' +
+        '<div style="min-width:0"><div style="font-weight:700;font-size:' + (n.big ? '15' : '13') + 'px;color:#f0e9d6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + n.title + '</div>' +
+        '<div style="font-size:11px;color:#8f97a2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + n.sub + '</div></div>';
+      cv.appendChild(d);
+    });
+  }
+  const clearMemBtn = document.getElementById('clearMemBtn');
+  if (clearMemBtn) clearMemBtn.addEventListener('click', () => {
+    if (window.confirm('Clear Annabelle\'s memory of this conversation on this device? This cannot be undone.')) { clearHistory(); showPanel(null); }
+  });
+
+  // Populate the Agents panel: rename-able center brain, 3 live agents, network nodes.
+  const liveAgents = [
+    { n: 'The Dreamerie', col: '#c98fe0', d: 'Decor & gifts shop — candles, home goods, orders, gift recommendations, customer support.' },
+    { n: 'Suzy D', col: '#e85fa0', d: 'TikTok Live persona & community — content ideas, hooks/scripts, growing "the family."' },
+  ];
+  const agentListEl = document.getElementById('agentList');
+  const pencil = '<span style="font-size:13px">&#9998;</span>';
+
+  // Reflect a renamed center everywhere on screen.
+  const applyCenterName = () => {
+    const lbl = document.getElementById('apiStateLabel'); if (lbl) lbl.textContent = CENTER_NAME;
+    chatInput.placeholder = 'Ask ' + CENTER_NAME + ' anything…';
+  };
+
+  const renameCenter = () => {
+    const v = (window.prompt('Name for the central brain:', CENTER_NAME) || '').trim();
+    if (!v) return;
+    CENTER_NAME = v; nameOverrides.__center = v; saveNames(nameOverrides);
+    applyCenterName(); buildAgentPanel();
+  };
+  const renameNode = (a) => {
+    const v = (window.prompt('Rename "' + a.n + '" to:', a.n) || '').trim();
+    if (!v) return;
+    a.n = v; nameOverrides[a.orig] = v; saveNames(nameOverrides);
+    buildAgentPanel();
+  };
+
+  function buildAgentPanel() {
+    if (!agentListEl) return;
+    agentListEl.innerHTML = '';
+    // Center brain row (editable).
+    const crow = document.createElement('div');
+    crow.style.cssText = 'padding:12px 14px;border-radius:10px;background:rgba(230,201,136,0.10);border:1px solid rgba(212,175,55,0.4);display:flex;align-items:center;gap:8px';
+    crow.innerHTML = '<span style="width:10px;height:10px;border-radius:50%;background:#f4d47a"></span><span style="font-weight:700;font-size:14px;color:#f0e6b8">' + CENTER_NAME + '</span><span style="font-size:11px;color:#7d7c74">central brain</span>';
+    const cbtn = document.createElement('button');
+    cbtn.style.cssText = 'margin-left:auto;background:none;border:none;color:#c79a2b;cursor:pointer'; cbtn.innerHTML = pencil;
+    cbtn.addEventListener('click', renameCenter); crow.appendChild(cbtn);
+    agentListEl.appendChild(crow);
+
+    liveAgents.forEach(a => {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:12px 14px;border-radius:10px;background:rgba(230,201,136,0.06);border:1px solid ' + a.col + '55';
+      row.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="width:9px;height:9px;border-radius:50%;background:' + a.col + '"></span><span style="font-weight:600;font-size:14px;color:#e6e2d6">' + a.n + '</span><span style="margin-left:auto;font-size:10px;letter-spacing:0.1em;color:#59b06a">● LIVE</span></div><div style="font-size:12.5px;color:#95928a;line-height:1.45">' + a.d + '</div>';
+      agentListEl.appendChild(row);
+    });
+
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'margin-top:6px;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#7d7c74';
+    hdr.textContent = 'Network nodes (' + agents.length + ') — rename as you build them';
+    agentListEl.appendChild(hdr);
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px';
+    agents.forEach(a => {
+      const chip = document.createElement('div');
+      chip.style.cssText = 'display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:8px;background:rgba(200,204,210,0.05)';
+      chip.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:' + a.col + ';flex:none"></span><span style="font-size:12px;color:#c8ccd2;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + a.n + '</span>';
+      const b = document.createElement('button');
+      b.style.cssText = 'background:none;border:none;color:#6f7681;cursor:pointer;flex:none'; b.innerHTML = pencil;
+      b.addEventListener('click', () => renameNode(a));
+      chip.appendChild(b); grid.appendChild(chip);
+    });
+    agentListEl.appendChild(grid);
+  }
+  applyCenterName();
+  buildAgentPanel();
+
+  let tNow = 0;
+  const draw = () => {
+    try {
+    tNow += 0.016;
+    if (autoRot && !dragging) yaw += 0.0014;
+    ctx.clearRect(0, 0, W, H);
+
+    const bp = project([0,0,0]);
+    agents.forEach(a => { a._w = [a.pos[0] + Math.sin(tNow*0.5+a.ph)*10, a.pos[1] + Math.cos(tNow*0.45+a.ph)*10, a.pos[2] + Math.sin(tNow*0.4+a.ph)*10]; a._c = project(a._w); });
+    agents.forEach(a => { ctx.strokeStyle = 'rgba(' + a.opt.glow + ',0.10)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(bp.x, bp.y); ctx.lineTo(a._c.x, a._c.y); ctx.stroke(); });
+
+    if (!imgReady) {
+      if (brain.fires.length < 26 && Math.random() < 0.8) brain.fires.push({ e: brain.edges[(Math.random()*brain.edges.length)|0], t: 0, sp: 0.03 + Math.random()*0.03 });
+      agents.forEach(a => { if (a.cloud.fires.length < 6 && Math.random() < 0.04) a.cloud.fires.push({ e: a.cloud.edges[(Math.random()*a.cloud.edges.length)|0], t: 0, sp: 0.05 + Math.random()*0.04 }); });
+    }
+
+    ambientTimer++; if (ambientTimer >= ambientEvery) { ambientTimer = 0; ambientEvery = 150 + Math.random()*120; pulseTo(agents[Math.floor(Math.random()*agents.length)]); }
+
+    const items = agents.map(a => ({ a, depth: a._c.depth })); items.push({ brain: true, depth: bp.depth });
+    items.sort((p, q) => q.depth - p.depth);
+
+    items.forEach(it => {
+      if (it.brain) {
+        if (imgReady) {
+          // Breathe a little harder while the Main Brain is actually working.
+          const breathe = thinking ? 0.03*Math.sin(tNow*5) : 0.015*Math.sin(tNow*1.6);
+          drawImg(spriteCenter, bp.x, bp.y, 460*bp.s*(1+breathe), 0.95);
+        } else {
+          drawCloud(brain, [0,0,0], true, null);
+        }
+        if (bp.s > 0.35) { ctx.fillStyle = '#f0e6b8'; ctx.textAlign = 'center'; ctx.font = '700 ' + (14*Math.min(bp.s,1.4)) + 'px Inter, sans-serif'; ctx.fillText(CENTER_NAME.toUpperCase(), bp.x, bp.y + (imgReady ? 180*bp.s : 118*bp.s)); }
+      } else {
+        const a = it.a; a.flare *= 0.93;
+        if (a.flare > 0.02) { const r = 52*a._c.s*a.flare; const g = ctx.createRadialGradient(a._c.x, a._c.y, 0, a._c.x, a._c.y, r); g.addColorStop(0, 'rgba(' + a.opt.glow + ',' + (0.4*a.flare) + ')'); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(a._c.x, a._c.y, r, 0, 6.283); ctx.fill(); }
+        if (imgReady && a.tint) {
+          drawImg(a.tint, a._c.x, a._c.y, 150*a._c.s, Math.min(1, 0.82 + 0.18*Math.sin(tNow*2.4+a.ph) + a.flare*0.5));
+        } else {
+          drawCloud(a.cloud, a._w, false, a.opt);
+        }
+        if (a._c.s > 0.32) { ctx.textAlign = 'center'; ctx.fillStyle = a.col; ctx.font = '600 ' + (11.5*Math.min(a._c.s,1.3)) + 'px Inter, sans-serif'; ctx.fillText(a.n, a._c.x, a._c.y + (imgReady ? 66 : 40)*a._c.s); }
+      }
+    });
+
+    pulses.forEach(pu => {
+      pu.t += pu.sp;
+      for (let k = 0; k < 8; k++) { const tt = pu.t - k*0.04; if (tt < 0 || tt > 1) continue; const pr = project(qb3([0,0,0], pu.ctrl, pu.a.pos, tt)); const al = (1 - k/8)*(1 - Math.abs(0.5 - pu.t))*1.6; ctx.beginPath(); ctx.arc(pr.x, pr.y, (4 - k*0.4)*pr.s, 0, 6.283); ctx.fillStyle = 'rgba(255,244,200,' + Math.max(0, Math.min(1, al)) + ')'; ctx.fill(); }
+      if (pu.t >= 1) pu.a.flare = 1;
+    });
+    pulses = pulses.filter(pu => pu.t < 1.1);
+
+    // Waveforms react to REAL listening / speaking state.
+    for (let i = 0; i < NB; i++) {
+      const lAmp = listening ? 5 + Math.abs(Math.sin(tNow*9 + i*0.6))*22*(0.5 + 0.5*Math.sin(tNow*4 + i)) : 4 + (1.5 + 1.5*Math.sin(tNow*3 + i*0.5))*(1 + Math.sin(tNow*0.7))*0.5;
+      lBars[i].style.height = Math.max(3, lAmp) + 'px';
+      const sAmp = ttsActive ? 4 + Math.abs(Math.sin(tNow*11 + i*0.7))*22*(0.5 + 0.5*Math.sin(tNow*5 + i)) : 3;
+      sBars[i].style.height = Math.max(3, sAmp) + 'px';
+    }
+    speakState.textContent = ttsActive ? 'ACTIVE' : 'IDLE';
+    speakState.style.color = ttsActive ? '#e6cf88' : '#7d7c74';
+    } catch (err) { console.error('draw error', err); }
+
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+})();
+</script>
+
+</body>
+</html>

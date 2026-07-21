@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stinger Command Center</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px 16px 120px;
+    background: #FCFCFB;
+    color: #2E2C27;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #6B6A63; font-size: 14px; margin-bottom: 24px; }
+  #log {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .msg {
+    padding: 10px 14px;
+    border-radius: 10px;
+    line-height: 1.4;
+    max-width: 85%;
+    white-space: pre-wrap;
+  }
+  .user { align-self: flex-end; background: #2E2C27; color: #FCFCFB; }
+  .assistant { align-self: flex-start; background: #F0EFEA; }
+  .meta { font-size: 11px; color: #B4B3A8; margin-top: 4px; }
+  form {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    background: #FCFCFB;
+    border-top: 1px solid #E4E3DC;
+  }
+  input[type=text] {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #E4E3DC;
+    font-size: 15px;
+  }
+  button {
+    border: none;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 15px;
+    cursor: pointer;
+    background: #2E2C27;
+    color: #FCFCFB;
+  }
+  button.mic { background: #C6613F; }
+  button.mic.listening { background: #a94d30; }
+  button:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+  <h1>Stinger Command Center</h1>
+  <div class="sub">Main Brain — routes to Ohh Beehave, Stinger Industries, and Late Nite Labs referral agents</div>
+
+  <div id="log"></div>
+
+  <form id="chat-form">
+    <button type="button" id="mic-btn" class="mic" title="Speak">🎤</button>
+    <input type="text" id="input" placeholder="Type or speak a message..." autocomplete="off" />
+    <button type="submit" id="send-btn">Send</button>
+  </form>
+
+<script>
+const log = document.getElementById('log');
+const form = document.getElementById('chat-form');
+const input = document.getElementById('input');
+const micBtn = document.getElementById('mic-btn');
+const sendBtn = document.getElementById('send-btn');
+
+let history = [];
+
+function addMessage(role, text, meta) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  if (meta) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = meta;
+    div.appendChild(m);
+  }
+  log.appendChild(div);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+// ---- Text-to-speech (browser native, swap for ElevenLabs/etc later) ----
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  window.speechSynthesis.speak(utter);
+}
+
+// ---- Speech-to-text (browser native Web Speech API) ----
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let listening = false;
+
+if (SpeechRecognition) {
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = 'en-US';
+
+  recognition.onresult = (event) => {
+    const transcript = event.results[0][0].transcript;
+    input.value = transcript;
+    form.requestSubmit();
+  };
+  recognition.onend = () => {
+    listening = false;
+    micBtn.classList.remove('listening');
+  };
+  recognition.onerror = () => {
+    listening = false;
+    micBtn.classList.remove('listening');
+  };
+} else {
+  micBtn.disabled = true;
+  micBtn.title = 'Speech recognition not supported in this browser';
+}
+
+micBtn.addEventListener('click', () => {
+  if (!recognition || listening) return;
+  listening = true;
+  micBtn.classList.add('listening');
+  recognition.start();
+});
+
+// ---- Chat submit ----
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  addMessage('user', text);
+  history.push({ role: 'user', content: text });
+  sendBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, history }),
+    });
+    const data = await res.json();
+    const meta = data.delegated_to && data.delegated_to.length
+      ? 'via ' + data.delegated_to.join(', ')
+      : null;
+    addMessage('assistant', data.reply, meta);
+    history.push({ role: 'assistant', content: data.reply });
+    speak(data.reply);
+  } catch (err) {
+    addMessage('assistant', 'Something went wrong reaching the server: ' + err);
+  } finally {
+    sendBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

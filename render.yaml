@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: dreamerie-command-center
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # paste in the Render dashboard, never in git
+      - key: ACCESS_CODE
+        sync: false          # Susan's dashboard password — paste in Render
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5
+      - key: TTS_VOICE
+        value: en-US-AriaNeural
+      - key: XAI_API_KEY
+        sync: false          # optional: paste to use Grok TTS instead of free voice
+      - key: XAI_VOICE
+        value: ara            # ara | eve | leo | rex | sal, or a cloned voice_id
+      - key: AIRTABLE_TOKEN
+        sync: false          # personal access token (pat...) -- Susan's OWN base, not Vinny's
+      - key: AIRTABLE_BASE_ID
+        sync: false          # paste after creating Susan's own Airtable base (see setup notes)
