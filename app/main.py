@@ -348,6 +348,33 @@ def history(limit: int = 40) -> JSONResponse:
     return JSONResponse({"history": crm.get_history(limit)})
 
 
+class SettingsUpdate(BaseModel):
+    gmail_address: str = ""
+    gmail_app_password: str = ""
+
+
+@app.get("/api/settings")
+def get_settings() -> JSONResponse:
+    """Owner-only (behind the access gate). Reports connection status --
+    never echoes the app password itself back to the frontend."""
+    return JSONResponse({
+        "gmail_address": emailer.get_gmail_address(),
+        "gmail_connected": emailer.is_configured(),
+    })
+
+
+@app.post("/api/settings")
+def save_settings(req: SettingsUpdate) -> JSONResponse:
+    """Owner-only. Saves connector credentials to Airtable Settings so they
+    take effect immediately -- no Render redeploy needed. Blank fields are
+    left untouched (so re-saving the address doesn't wipe a saved password)."""
+    if req.gmail_address.strip():
+        crm.set_setting(emailer.GMAIL_ADDRESS_KEY, req.gmail_address.strip())
+    if req.gmail_app_password.strip():
+        crm.set_setting(emailer.GMAIL_APP_PASSWORD_KEY, req.gmail_app_password.strip())
+    return JSONResponse({"ok": True, "gmail_connected": emailer.is_configured()})
+
+
 @app.get("/api/agent-name")
 def agent_name() -> JSONResponse:
     """Return the name Susan has chosen for the assistant, if any."""

@@ -37,6 +37,7 @@
     <a href="#" id="navAgents" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Agents</a>
     <a href="#" id="navTasks" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Tasks</a>
     <a href="#" id="navHistory" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">History</a>
+    <a href="#" id="navSettings" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Settings</a>
     <a href="/static/basic.html" style="color:#9aa0aa;text-decoration:none;font-size:13px">Basic UI</a>
     <div style="width:32px;height:32px;border-radius:50%;background:#141310;box-shadow:0 0 0 1px rgba(212,175,55,0.5);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#d4af37">V</div>
   </div>
@@ -132,6 +133,32 @@
     </div>
     <div style="font-size:12px;color:#7d7c74;margin-bottom:16px">Everything Annabelle remembers — saved forever, on every device.</div>
     <div id="historyList" style="display:flex;flex-direction:column;gap:12px"><div style="color:#6f6e66;font-size:13px">Loading…</div></div>
+  </div>
+
+  <!-- Settings panel: self-serve connectors (no Render access needed) -->
+  <div id="panelSettings" style="display:none;position:absolute;top:110px;left:50%;transform:translateX(-50%);width:520px;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">SETTINGS</div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:24px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="font-size:12px;color:#7d7c74;margin-bottom:18px">Connect real capabilities — no Render access needed.</div>
+
+    <div style="border:1px solid rgba(212,175,55,0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <div style="font-weight:600;font-size:13.5px">Email (Gmail)</div>
+        <span id="gmailStatus" style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:2px 8px;border-radius:8px;background:rgba(224,164,143,0.15);color:#e0a48f">Checking…</span>
+      </div>
+      <div style="font-size:11.5px;color:#7d7c74;margin-bottom:12px;line-height:1.5">
+        Generate a Gmail <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password</a>
+        (requires 2-Step Verification) and paste it below — never your normal Gmail password.
+      </div>
+      <input id="gmailAddress" type="email" placeholder="you@gmail.com" style="width:100%;margin-bottom:8px;padding:9px 11px;font-size:13.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <input id="gmailAppPassword" type="password" placeholder="16-character app password" style="width:100%;margin-bottom:10px;padding:9px 11px;font-size:13.5px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <button id="saveSettingsBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Save &amp; Connect</button>
+      <span id="settingsMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+    </div>
+
+    <div style="font-size:11px;color:#5f5e57">More connectors (Google Calendar, etc.) will show up here as they're built.</div>
   </div>
 
 </div>
@@ -606,22 +633,55 @@
   const panelTasks = document.getElementById('panelTasks');
   const panelFlow = document.getElementById('panelFlow');
   const panelHistory = document.getElementById('panelHistory');
+  const panelSettings = document.getElementById('panelSettings');
   const navCommand = document.getElementById('navCommand');
   const navAgents = document.getElementById('navAgents');
   const navTasks = document.getElementById('navTasks');
   const navFlow = document.getElementById('navFlow');
   const navHistory = document.getElementById('navHistory');
+  const navSettings = document.getElementById('navSettings');
   const showPanel = (p) => {
     panelAgents.style.display = 'none'; panelTasks.style.display = 'none';
     panelFlow.style.display = 'none'; panelHistory.style.display = 'none';
-    if (p) { p.style.display = 'block'; if (p === panelFlow) renderFlow(); if (p === panelHistory) renderHistory(); }
+    panelSettings.style.display = 'none';
+    if (p) { p.style.display = 'block'; if (p === panelFlow) renderFlow(); if (p === panelHistory) renderHistory(); if (p === panelSettings) renderSettings(); }
   };
   navCommand.addEventListener('click', (e) => { e.preventDefault(); showPanel(null); });
   navAgents.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelAgents.style.display === 'block' ? null : panelAgents); });
   navTasks.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelTasks.style.display === 'block' ? null : panelTasks); });
   navFlow.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelFlow.style.display === 'block' ? null : panelFlow); });
   navHistory.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelHistory.style.display === 'block' ? null : panelHistory); });
+  navSettings.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelSettings.style.display === 'block' ? null : panelSettings); });
   document.querySelectorAll('.panelClose').forEach(b => b.addEventListener('click', () => showPanel(null)));
+
+  // Settings panel: self-serve connectors, saved straight to Airtable (no redeploy).
+  function renderSettings() {
+    const statusEl = document.getElementById('gmailStatus');
+    statusEl.textContent = 'Checking…';
+    fetch('/api/settings').then(r => r.json()).then(d => {
+      document.getElementById('gmailAddress').value = d.gmail_address || '';
+      if (d.gmail_connected) {
+        statusEl.textContent = 'Connected'; statusEl.style.background = 'rgba(143,176,143,0.15)'; statusEl.style.color = '#8fb08f';
+      } else {
+        statusEl.textContent = 'Not connected'; statusEl.style.background = 'rgba(224,164,143,0.15)'; statusEl.style.color = '#e0a48f';
+      }
+    }).catch(() => { statusEl.textContent = 'Error loading'; });
+  }
+  document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+    const msg = document.getElementById('settingsMsg');
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        gmail_address: document.getElementById('gmailAddress').value.trim(),
+        gmail_app_password: document.getElementById('gmailAppPassword').value.trim(),
+      }),
+    }).then(r => r.json()).then(d => {
+      document.getElementById('gmailAppPassword').value = '';
+      msg.textContent = d.gmail_connected ? 'Saved — connected!' : 'Saved.';
+      renderSettings();
+    }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
+  });
 
   // Render the durable conversation history (pulled fresh from the server each open).
   function renderHistory() {
