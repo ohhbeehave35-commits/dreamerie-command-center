@@ -9,6 +9,7 @@ Requires ANTHROPIC_API_KEY set in the environment (see .env.example).
 """
 
 import os
+import time
 from typing import List, Dict
 
 import edge_tts
@@ -104,7 +105,9 @@ LOCK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const r = await fetch('/api/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: document.getElementById('c').value }) });
-  if (r.ok) location.reload(); else document.getElementById('m').textContent = 'Incorrect code';
+  if (r.ok) { location.reload(); return; }
+  const j = await r.json().catch(() => ({}));
+  document.getElementById('m').textContent = j.detail || 'Incorrect code';
 });
 </script></body></html>"""
 
@@ -127,12 +130,40 @@ class UnlockRequest(BaseModel):
     code: str
 
 
+# Brute-force protection on the access gate: per-IP sliding-window lockout.
+# In-memory (resets on redeploy/restart) -- fine for a single-instance app;
+# the goal is defeating a simple automated guesser, not surviving a restart.
+UNLOCK_MAX_ATTEMPTS = int(os.environ.get("UNLOCK_MAX_ATTEMPTS", "5"))
+UNLOCK_WINDOW_SECONDS = int(os.environ.get("UNLOCK_WINDOW_SECONDS", "900"))  # 15 min
+_unlock_attempts: Dict[str, list] = {}
+
+
+def _client_ip(request: Request) -> str:
+    # Render sits behind a proxy; X-Forwarded-For carries the real client IP first.
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @app.post("/api/unlock")
-def unlock(req: UnlockRequest) -> JSONResponse:
+def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
+    ip = _client_ip(request)
+    now = time.time()
+    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
+        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
+        return JSONResponse(
+            {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
+            status_code=429,
+        )
     if ACCESS_CODE and req.code == ACCESS_CODE:
+        _unlock_attempts.pop(ip, None)
         resp = JSONResponse({"ok": True})
         resp.set_cookie("cc_access", ACCESS_CODE, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
         return resp
+    attempts.append(now)
+    _unlock_attempts[ip] = attempts
     return JSONResponse({"ok": False}, status_code=401)
 
 
