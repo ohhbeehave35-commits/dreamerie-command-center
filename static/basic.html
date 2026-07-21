@@ -3,76 +3,107 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Stinger Command Center</title>
+<title>The Dreamerie Command Center</title>
 <style>
   :root { color-scheme: light dark; }
   body {
     font-family: -apple-system, "Segoe UI", sans-serif;
     max-width: 720px;
     margin: 0 auto;
-    padding: 24px 16px 120px;
+    padding: 16px 16px 120px;
     background: #FCFCFB;
     color: #2E2C27;
   }
   h1 { font-size: 20px; margin-bottom: 4px; }
-  .sub { color: #6B6A63; font-size: 14px; margin-bottom: 24px; }
-  #log {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 16px;
-  }
-  .msg {
-    padding: 10px 14px;
-    border-radius: 10px;
-    line-height: 1.4;
-    max-width: 85%;
-    white-space: pre-wrap;
-  }
+  .sub { color: #6B6A63; font-size: 14px; margin-bottom: 4px; }
+  .fulllink { font-size: 12px; color: #6B6A63; }
+  #topnav { display: flex; gap: 6px; margin: 14px 0 18px; border-bottom: 1px solid #E4E3DC; padding-bottom: 10px; align-items: center; }
+  .tab { border: none; background: #F0EFEA; color: #6B6A63; padding: 7px 13px; border-radius: 8px; font-size: 13.5px; cursor: pointer; }
+  .tab.active { background: #b87ad9; color: #FCFCFB; }
+  #log { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+  .msg { padding: 10px 14px; border-radius: 10px; line-height: 1.4; max-width: 85%; white-space: pre-wrap; }
   .user { align-self: flex-end; background: #2E2C27; color: #FCFCFB; }
   .assistant { align-self: flex-start; background: #F0EFEA; }
   .meta { font-size: 11px; color: #B4B3A8; margin-top: 4px; }
-  form {
-    position: fixed;
-    bottom: 0; left: 0; right: 0;
-    display: flex;
-    gap: 8px;
-    padding: 12px 16px;
-    background: #FCFCFB;
-    border-top: 1px solid #E4E3DC;
+  form#chat-form {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; gap: 8px; padding: 12px 16px;
+    background: #FCFCFB; border-top: 1px solid #E4E3DC;
+    max-width: 720px; margin: 0 auto;
   }
-  input[type=text] {
-    flex: 1;
-    padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid #E4E3DC;
-    font-size: 15px;
-  }
-  button {
-    border: none;
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-size: 15px;
-    cursor: pointer;
-    background: #2E2C27;
-    color: #FCFCFB;
-  }
+  input[type=text] { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid #E4E3DC; font-size: 15px; }
+  button { border: none; border-radius: 8px; padding: 10px 14px; font-size: 15px; cursor: pointer; background: #b87ad9; color: #FCFCFB; }
   button.mic { background: #C6613F; }
   button.mic.listening { background: #a94d30; }
   button:disabled { opacity: 0.5; cursor: default; }
+  .card { border: 1px solid #E4E3DC; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h3 { font-size: 14px; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 7px; background: #F0EFEA; color: #6B6A63; }
+  .badge.ok { background: #E3EFE3; color: #3f7a3f; }
+  .hint { font-size: 12px; color: #6B6A63; margin-bottom: 10px; line-height: 1.5; }
+  .field { width: 100%; margin-bottom: 8px; padding: 9px 11px; font-size: 14px; border: 1px solid #E4E3DC; border-radius: 8px; box-sizing: border-box; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .row .field { width: 90px; margin-bottom: 0; text-align: right; }
+  .savebtn { font-size: 13px; padding: 8px 14px; }
+  .msgline { font-size: 12px; color: #3f7a3f; margin-left: 8px; }
 </style>
 </head>
 <body>
-  <h1>Stinger Command Center</h1>
-  <div class="sub">Main Brain — routes to Ohh Beehave, Stinger Industries, and Late Nite Labs referral agents</div>
+  <h1>The Dreamerie Command Center</h1>
+  <div class="sub">Your assistant — routes between The Dreamerie shop and Suzy D content specialists</div>
+  <a class="fulllink" href="/?full=1">Full visual UI &#8599;</a>
 
-  <div id="log"></div>
+  <div id="topnav">
+    <button class="tab active" data-tab="chat">Chat</button>
+    <button class="tab" data-tab="history">History</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
 
-  <form id="chat-form">
-    <button type="button" id="mic-btn" class="mic" title="Speak">🎤</button>
-    <input type="text" id="input" placeholder="Type or speak a message..." autocomplete="off" />
-    <button type="submit" id="send-btn">Send</button>
-  </form>
+  <div id="tab-chat">
+    <div id="log"></div>
+    <form id="chat-form">
+      <button type="button" id="mic-btn" class="mic" title="Speak">🎤</button>
+      <input type="text" id="input" placeholder="Type or speak a message..." autocomplete="off" />
+      <button type="submit" id="send-btn">Send</button>
+    </form>
+  </div>
+
+  <div id="tab-history" style="display:none">
+    <div id="historyList"><div style="color:#B4B3A8;font-size:13px">Loading…</div></div>
+  </div>
+
+  <div id="tab-settings" style="display:none">
+    <div class="card">
+      <h3>Email (Gmail) <span id="gmailStatus" class="badge">Checking…</span></h3>
+      <div class="hint">Generate a Gmail <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password</a> (requires 2-Step Verification) and paste it below — never your normal Gmail password.</div>
+      <input id="gmailAddress" class="field" type="email" placeholder="you@gmail.com">
+      <input id="gmailAppPassword" class="field" type="password" placeholder="16-character app password">
+      <button id="saveEmailBtn" class="savebtn">Save &amp; Connect</button>
+      <span id="emailMsg" class="msgline"></span>
+    </div>
+
+    <div class="card">
+      <h3>Usage &amp; Limits <span style="font-weight:400;color:#6B6A63;font-size:11px;text-transform:none">resets monthly</span></h3>
+      <div id="usageRows"></div>
+      <button id="saveCapsBtn" class="savebtn">Save Limits</button>
+      <span id="capsMsg" class="msgline"></span>
+    </div>
+
+    <div class="card">
+      <h3>Access Code <span id="accessCodeStatus" class="badge">Checking…</span></h3>
+      <div class="hint">Changing this logs out every other device until they enter the new code.</div>
+      <input id="newAccessCode" class="field" type="text" placeholder="New access code">
+      <button id="saveAccessCodeBtn" class="savebtn">Change Code</button>
+      <span id="accessCodeMsg" class="msgline"></span>
+    </div>
+
+    <div class="card">
+      <h3>Voice</h3>
+      <select id="voiceSelect" class="field"></select>
+      <button id="saveVoiceBtn" class="savebtn">Save Voice</button>
+      <span id="voiceMsg" class="msgline"></span>
+    </div>
+  </div>
 
 <script>
 const log = document.getElementById('log');
@@ -96,6 +127,126 @@ function addMessage(role, text, meta) {
   log.appendChild(div);
   window.scrollTo(0, document.body.scrollHeight);
 }
+
+// ---- Tabs ----
+const tabs = document.querySelectorAll('.tab');
+const panels = { chat: document.getElementById('tab-chat'), history: document.getElementById('tab-history'), settings: document.getElementById('tab-settings') };
+tabs.forEach(t => t.addEventListener('click', () => {
+  tabs.forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  Object.values(panels).forEach(p => p.style.display = 'none');
+  const name = t.dataset.tab;
+  panels[name].style.display = 'block';
+  if (name === 'history') renderHistory();
+  if (name === 'settings') renderSettings();
+}));
+
+// ---- History ----
+function renderHistory() {
+  const el = document.getElementById('historyList');
+  el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">Loading…</div>';
+  fetch('/api/history?limit=60').then(r => r.json()).then(d => {
+    const h = (d && d.history) || [];
+    if (!h.length) { el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">No saved conversations yet.</div>'; return; }
+    el.innerHTML = '';
+    h.forEach(m => {
+      const div = document.createElement('div');
+      div.className = 'msg ' + (m.role === 'user' ? 'user' : 'assistant');
+      div.style.marginBottom = '10px';
+      div.textContent = m.content || '';
+      el.appendChild(div);
+    });
+  }).catch(() => { el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">Couldn\'t load history.</div>'; });
+}
+
+// ---- Settings ----
+function badge(el, ok, onText, offText) {
+  el.textContent = ok ? onText : offText;
+  el.classList.toggle('ok', !!ok);
+}
+function renderSettings() {
+  const gmailStatus = document.getElementById('gmailStatus');
+  const accessStatus = document.getElementById('accessCodeStatus');
+  gmailStatus.textContent = 'Checking…';
+  fetch('/api/settings').then(r => r.json()).then(d => {
+    document.getElementById('gmailAddress').value = d.gmail_address || '';
+    badge(gmailStatus, d.gmail_connected, 'Connected', 'Not connected');
+    accessStatus.textContent = d.access_code_is_custom ? 'Custom' : 'Default';
+
+    const usage = document.getElementById('usageRows');
+    usage.innerHTML = '';
+    [
+      ['Web search', d.search_count, d.search_cap, 'searchCapInput'],
+      ['Public chat', d.public_chat_count, d.public_chat_cap, 'publicCapInput'],
+      ['Owner chat', d.owner_chat_count, d.owner_chat_cap, 'ownerCapInput'],
+    ].forEach(([label, count, cap, id]) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = '<div style="font-size:13px">' + label + ' <span style="color:#B4B3A8">(' + count + ' used)</span></div>' +
+        '<input id="' + id + '" class="field" type="number" min="0" value="' + cap + '">';
+      usage.appendChild(row);
+    });
+
+    const voiceSelect = document.getElementById('voiceSelect');
+    voiceSelect.innerHTML = '';
+    (d.tts_voice_options || []).forEach(v => {
+      const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
+      if (v === d.tts_voice) opt.selected = true;
+      voiceSelect.appendChild(opt);
+    });
+  }).catch(() => { gmailStatus.textContent = 'Error loading'; });
+}
+document.getElementById('saveEmailBtn').addEventListener('click', () => {
+  const msg = document.getElementById('emailMsg');
+  msg.textContent = 'Saving…';
+  fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      gmail_address: document.getElementById('gmailAddress').value.trim(),
+      gmail_app_password: document.getElementById('gmailAppPassword').value.trim(),
+    }),
+  }).then(r => r.json()).then(d => {
+    document.getElementById('gmailAppPassword').value = '';
+    msg.textContent = d.gmail_connected ? 'Saved — connected!' : 'Saved.';
+    renderSettings();
+  }).catch(() => { msg.textContent = "Couldn't save — try again."; });
+});
+document.getElementById('saveCapsBtn').addEventListener('click', () => {
+  const msg = document.getElementById('capsMsg');
+  msg.textContent = 'Saving…';
+  fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      search_cap: document.getElementById('searchCapInput').value,
+      public_chat_cap: document.getElementById('publicCapInput').value,
+      owner_chat_cap: document.getElementById('ownerCapInput').value,
+    }),
+  }).then(r => r.json()).then(() => { msg.textContent = 'Saved.'; renderSettings(); })
+    .catch(() => { msg.textContent = "Couldn't save — try again."; });
+});
+document.getElementById('saveAccessCodeBtn').addEventListener('click', () => {
+  const msg = document.getElementById('accessCodeMsg');
+  const val = document.getElementById('newAccessCode').value.trim();
+  if (!val) { msg.textContent = 'Enter a new code first.'; return; }
+  msg.textContent = 'Saving…';
+  fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ access_code: val }),
+  }).then(() => {
+    document.getElementById('newAccessCode').value = '';
+    msg.textContent = 'Changed — other devices logged out.';
+    renderSettings();
+  }).catch(() => { msg.textContent = "Couldn't save — try again."; });
+});
+document.getElementById('saveVoiceBtn').addEventListener('click', () => {
+  const msg = document.getElementById('voiceMsg');
+  msg.textContent = 'Saving…';
+  fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tts_voice: document.getElementById('voiceSelect').value }),
+  }).then(() => { msg.textContent = 'Saved.'; })
+    .catch(() => { msg.textContent = "Couldn't save — try again."; });
+});
 
 // ---- Text-to-speech (browser native, swap for ElevenLabs/etc later) ----
 function speak(text) {

@@ -4,6 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Stinger Command Center</title>
+<script>
+  // This dashboard is a fixed-size 3D canvas built for desktop -- on a phone
+  // it just shrinks to fit and everything becomes unreadable/untappable.
+  // Auto-route small screens to the plain, genuinely mobile-friendly Basic UI
+  // (same chat, plus History and Settings). ?full=1 opts back into this one.
+  (function () {
+    var isSmall = window.innerWidth < 820 || /Mobi|Android/i.test(navigator.userAgent);
+    var forced = new URLSearchParams(location.search).get('full') === '1';
+    if (isSmall && !forced) { location.replace('/static/basic.html'); }
+  })();
+</script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <style>
   html, body { margin: 0; height: 100%; background: #030304; overflow: hidden; }

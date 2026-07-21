@@ -33,7 +33,7 @@
   .bot { align-self: flex-start; background: #f3e3fa; border: 1px solid #e3c6f0; border-bottom-left-radius: 4px; }
   .me  { align-self: flex-end; background: #2a1530; color: #fff; border-bottom-right-radius: 4px; }
   .typing { align-self: flex-start; color: #9a86a8; font-size: 13px; font-style: italic; }
-  form { display: flex; gap: 7px; padding: 10px; border-top: 1px solid #eee0f5; background: #fdf9ff; flex: none; }
+  form { display: flex; gap: 7px; padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #eee0f5; background: #fdf9ff; flex: none; }
   input { flex: 1; font-size: 15px; padding: 11px 13px; border: 1px solid #e3c6f0; border-radius: 20px; outline: none; }
   input:focus { border-color: #b87ad9; }
   form button { border: none; background: #b87ad9; color: #fff; font-weight: 700; font-size: 14px;
