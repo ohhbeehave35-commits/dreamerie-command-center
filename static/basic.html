@@ -103,6 +103,17 @@
       <button id="saveVoiceBtn" class="savebtn">Save Voice</button>
       <span id="voiceMsg" class="msgline"></span>
     </div>
+
+    <div class="card">
+      <h3>Social Posting (Zapier) <span id="socialStatus" class="badge">Checking…</span></h3>
+      <div class="hint">Your assistant drafts posts you approve in chat; approved posts publish through your <a href="https://zapier.com/app/zaps" target="_blank" rel="noopener">Zapier</a> webhooks. Each platform gets its own Zap "Catch Hook" URL; the default covers any without one. Instagram needs a photo; YouTube &amp; TikTok are video — you supply the media.</div>
+      <input id="zapierWebhookUrl" class="field" type="url" placeholder="Default / Facebook webhook">
+      <input id="zapierWebhookTiktok" class="field" type="url" placeholder="TikTok webhook (optional)">
+      <input id="zapierWebhookInstagram" class="field" type="url" placeholder="Instagram webhook (optional)">
+      <input id="zapierWebhookYoutube" class="field" type="url" placeholder="YouTube webhook (optional)">
+      <button id="saveSocialBtn" class="savebtn">Save &amp; Connect</button>
+      <span id="socialMsg" class="msgline"></span>
+    </div>
   </div>
 
 <script>
@@ -194,6 +205,16 @@ function renderSettings() {
       if (v === d.tts_voice) opt.selected = true;
       voiceSelect.appendChild(opt);
     });
+
+    const socialStatus = document.getElementById('socialStatus');
+    const plats = d.social_platforms || {};
+    const connected = Object.keys(plats).filter(p => plats[p]);
+    if (connected.length) {
+      socialStatus.textContent = connected.join(', ');
+      socialStatus.style.color = '#3f7a3f';
+    } else {
+      badge(socialStatus, false, '', 'Not connected');
+    }
   }).catch(() => { gmailStatus.textContent = 'Error loading'; });
 }
 document.getElementById('saveEmailBtn').addEventListener('click', () => {
@@ -246,6 +267,25 @@ document.getElementById('saveVoiceBtn').addEventListener('click', () => {
     body: JSON.stringify({ tts_voice: document.getElementById('voiceSelect').value }),
   }).then(() => { msg.textContent = 'Saved.'; })
     .catch(() => { msg.textContent = "Couldn't save — try again."; });
+});
+document.getElementById('saveSocialBtn').addEventListener('click', () => {
+  const msg = document.getElementById('socialMsg');
+  const body = {
+    zapier_webhook_url: document.getElementById('zapierWebhookUrl').value.trim(),
+    zapier_webhook_url_tiktok: document.getElementById('zapierWebhookTiktok').value.trim(),
+    zapier_webhook_url_instagram: document.getElementById('zapierWebhookInstagram').value.trim(),
+    zapier_webhook_url_youtube: document.getElementById('zapierWebhookYoutube').value.trim(),
+  };
+  if (!Object.values(body).some(v => v)) { msg.textContent = 'Paste at least one webhook URL first.'; return; }
+  msg.textContent = 'Saving…';
+  fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).then(d => {
+    ['zapierWebhookUrl','zapierWebhookTiktok','zapierWebhookInstagram','zapierWebhookYoutube'].forEach(id => document.getElementById(id).value = '');
+    msg.textContent = d.social_connected ? 'Saved — connected!' : 'Saved.';
+    renderSettings();
+  }).catch(() => { msg.textContent = "Couldn't save — try again."; });
 });
 
 // ---- Text-to-speech (browser native, swap for ElevenLabs/etc later) ----

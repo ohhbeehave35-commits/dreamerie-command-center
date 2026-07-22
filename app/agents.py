@@ -87,6 +87,33 @@ call send_email yet, even if she seems to have already agreed to the idea.
 (2) Only after Susan's NEXT message clearly confirms (e.g. "yes", "send it",
 "go ahead"), call send_email with the same to/subject/body. If she asks for
 changes instead, redraft and ask again. Never skip the confirmation step.
+
+You can also draft and publish REAL social media posts (TikTok, Facebook, \
+Instagram, YouTube, X), OWNER-ONLY, with the exact same two-step discipline: \
+(1) call draft_social_post with content genuinely tailored to that platform \
+(TikTok a punchy hook in Suzy D's voice; YouTube a title + description; \
+Facebook a conversational post; Instagram a caption with hashtags), show \
+Susan the draft, ask if she wants it published, and STOP. (2) Only after her \
+NEXT message clearly approves, call publish_social_post with that draft's id \
+-- IMPORTANT: the id is usually NOT visible in your own prior reply text, so \
+if this is a new conversation turn and you don't already have the id in \
+front of you, call list_social_posts (filtered to Draft status) FIRST to \
+find the matching post by platform/content, then publish it. NEVER call \
+draft_social_post again just because you're unsure of the id -- that creates \
+a duplicate instead of publishing the one Susan already approved. If she \
+wants the same announcement on several platforms, create a separate tailored \
+draft for each -- never one generic blob -- and get approval before \
+publishing each batch. MEDIA REALITY: Instagram needs a photo and YouTube/\
+TikTok are video-only -- you write the words, but the photo/video itself \
+must come from Susan. Before asking her for a link, ALWAYS call find_assets \
+first to check whether something usable is already saved (product photos, \
+livestream clips, logos). Only ask her for a new link if nothing suitable \
+turns up. When she shares a media link worth reusing later, call save_asset \
+to keep it findable next time -- don't make her re-send the same link every \
+time. Never pretend you can create or find media yourself beyond what \
+find_assets returns. Use list_social_posts when she asks what's in the \
+queue. If publishing isn't connected yet, say so and point her to the \
+Settings panel.
 """
 
 
@@ -361,6 +388,104 @@ DELEGATION_TOOLS = [
                 "business": {"type": "string", "enum": ["The Dreamerie", "Suzy D / TikTok", "Other"], "description": "Filter by business side, if specified."},
                 "status": {"type": "string", "enum": ["New", "Contacted", "Quoted", "Scheduled", "Done", "Lost"], "description": "Filter by status, if relevant."},
                 "search": {"type": "string", "description": "Free-text to match against name, request, notes, or phone."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "draft_social_post",
+        "description": (
+            "OWNER-ONLY. Save a social media post DRAFT to the review queue -- "
+            "never publishes anything itself. Tailor the content to the platform "
+            "(TikTok: hook-y short caption in Suzy D's voice; YouTube: title + "
+            "description; Facebook: conversational post; Instagram: caption + "
+            "hashtags). MEDIA RULES: Instagram requires a photo, and YouTube/"
+            "TikTok ARE video -- none of them can post words alone. For those "
+            "platforms, ask Susan for a link to the photo/video first and pass "
+            "it as media_url; without it the draft will be refused. Facebook "
+            "and X work with text alone (media optional). Always show Susan "
+            "the draft, ask if she wants to publish, and STOP -- never call "
+            "publish_social_post in the same turn."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "enum": ["Facebook", "Instagram", "YouTube", "TikTok", "X"], "description": "Which platform this draft is tailored for."},
+                "content": {"type": "string", "description": "The full post text (or video description for YouTube)."},
+                "title": {"type": "string", "description": "Title/headline (mainly for YouTube)."},
+                "hashtags": {"type": "string", "description": "Space-separated hashtags, e.g. '#candles #fyp'."},
+                "media_url": {"type": "string", "description": "Direct link to the photo (Instagram/Facebook) or video (YouTube/TikTok) to post. REQUIRED for Instagram, YouTube, and TikTok."},
+            },
+            "required": ["platform", "content"],
+        },
+    },
+    {
+        "name": "list_social_posts",
+        "description": (
+            "OWNER-ONLY. List posts in the social media queue (drafts, published, "
+            "failed). Use when Susan asks what's queued up or wants to publish "
+            "an earlier draft."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["Draft", "Published", "Failed"], "description": "Filter by status, if asked."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "publish_social_post",
+        "description": (
+            "OWNER-ONLY. Actually publishes a drafted post to the real platform "
+            "via Zapier -- outbound and irreversible. Only ever call this after "
+            "Susan has explicitly approved a specific draft in her own words "
+            "(e.g. 'post it', 'publish that one'). Never call this in the same "
+            "turn as draft_social_post."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "string", "description": "The queue id of the draft to publish (shown when the draft was created or listed)."},
+            },
+            "required": ["post_id"],
+        },
+    },
+    {
+        "name": "save_asset",
+        "description": (
+            "OWNER-ONLY. Save a photo/video link (from Dropbox or wherever "
+            "Susan stores media) to the asset library under a memorable name "
+            "and tags, so it can be found and reused later instead of asking "
+            "her for the same link twice. Call this whenever she shares a "
+            "media link and it seems worth keeping (product photos, livestream "
+            "clips, logos, b-roll)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short memorable name, e.g. 'Lavender candle table photo'."},
+                "url": {"type": "string", "description": "Direct link to the photo or video file."},
+                "media_type": {"type": "string", "enum": ["Photo", "Video", "Audio", "Other"], "description": "What kind of file this is."},
+                "tags": {"type": "string", "description": "Space-separated searchable tags, e.g. 'candle product lavender'."},
+                "notes": {"type": "string", "description": "Any context worth remembering about this asset."},
+            },
+            "required": ["name", "url"],
+        },
+    },
+    {
+        "name": "find_assets",
+        "description": (
+            "OWNER-ONLY. Search the asset library for a saved photo/video by "
+            "name or tag. Use this BEFORE asking Susan for a media link when "
+            "drafting a social post -- check if something usable is already "
+            "saved first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Name or tag keyword to search for, e.g. 'candle' or 'livestream'."},
+                "media_type": {"type": "string", "enum": ["Photo", "Video", "Audio", "Other"], "description": "Filter by type, if relevant."},
             },
             "required": [],
         },

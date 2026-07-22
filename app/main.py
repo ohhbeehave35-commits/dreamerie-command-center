@@ -25,6 +25,8 @@ from anthropic import Anthropic
 
 from . import crm
 from . import emailer
+from . import social
+from . import assets
 from .agents import (
     build_main_brain_prompt,
     build_public_prompt,
@@ -343,6 +345,36 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                     block.input.get("subject", ""),
                     block.input.get("body", ""),
                 )
+            elif block.name == "draft_social_post":
+                delegated_to.append("Social (draft)")
+                answer = social.create_draft(
+                    block.input.get("platform", ""),
+                    block.input.get("content", ""),
+                    block.input.get("title", ""),
+                    block.input.get("hashtags", ""),
+                    block.input.get("media_url", ""),
+                )
+            elif block.name == "list_social_posts":
+                delegated_to.append("Social Queue")
+                answer = social.list_posts(block.input.get("status", ""))
+            elif block.name == "publish_social_post":
+                delegated_to.append("Social (published)")
+                answer = social.publish_post(block.input.get("post_id", ""))
+            elif block.name == "save_asset":
+                delegated_to.append("Asset Library")
+                answer = assets.add_asset(
+                    block.input.get("name", ""),
+                    block.input.get("url", ""),
+                    block.input.get("media_type", "Photo"),
+                    block.input.get("tags", ""),
+                    block.input.get("notes", ""),
+                )
+            elif block.name == "find_assets":
+                delegated_to.append("Asset Library")
+                answer = assets.find_assets(
+                    block.input.get("query", ""),
+                    block.input.get("media_type", ""),
+                )
             elif agent_key is None:
                 answer = f"Unknown tool: {block.name}"
             else:
@@ -420,6 +452,14 @@ class SettingsUpdate(BaseModel):
     owner_chat_cap: str = ""
     access_code: str = ""
     tts_voice: str = ""
+    zapier_webhook_url: str = ""
+    # Per-platform webhook overrides (each platform can have its own Zap; the
+    # generic zapier_webhook_url above stays the Facebook fallback). Blank = untouched.
+    zapier_webhook_url_facebook: str = ""
+    zapier_webhook_url_instagram: str = ""
+    zapier_webhook_url_youtube: str = ""
+    zapier_webhook_url_tiktok: str = ""
+    zapier_webhook_url_x: str = ""
 
 
 @app.get("/api/settings")
@@ -439,6 +479,8 @@ def get_settings() -> JSONResponse:
         "tts_voice": get_tts_voice(),
         "tts_voice_options": TTS_VOICE_OPTIONS,
         "access_code_is_custom": bool(crm.get_setting("access_code_override", "")),
+        "social_connected": social.is_configured(),
+        "social_platforms": social.connected_platforms(),
     })
 
 
@@ -466,7 +508,18 @@ def save_settings(req: SettingsUpdate) -> JSONResponse:
         crm.set_setting("tts_voice_override", req.tts_voice.strip())
     if req.access_code.strip():
         crm.set_setting("access_code_override", req.access_code.strip())
-    return JSONResponse({"ok": True, "gmail_connected": emailer.is_configured()})
+    if req.zapier_webhook_url.strip():
+        crm.set_setting(social.WEBHOOK_KEY, req.zapier_webhook_url.strip())
+    for plat in ("facebook", "instagram", "youtube", "tiktok", "x"):
+        val = getattr(req, f"zapier_webhook_url_{plat}", "").strip()
+        if val:
+            crm.set_setting(f"{social.WEBHOOK_KEY}_{plat}", val)
+    return JSONResponse({
+        "ok": True,
+        "gmail_connected": emailer.is_configured(),
+        "social_connected": social.is_configured(),
+        "social_platforms": social.connected_platforms(),
+    })
 
 
 @app.get("/api/agent-name")

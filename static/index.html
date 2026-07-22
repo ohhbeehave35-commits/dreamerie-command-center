@@ -194,6 +194,19 @@
       <span id="voiceMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
     </div>
 
+    <div style="margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid rgba(200,204,210,0.12)">
+      <div style="font-weight:600;font-size:13.5px;margin-bottom:4px">Social Posting (Zapier)
+        <span id="socialStatus" style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:2px 8px;border-radius:8px;background:rgba(224,164,143,0.15);color:#e0a48f;margin-left:6px">Checking…</span>
+      </div>
+      <div style="font-size:11.5px;color:#8a8880;margin-bottom:10px">Your assistant drafts posts you approve in chat; approved posts publish through your Zapier webhooks. Each platform gets its own Zap "Catch Hook" URL. Instagram needs a photo; YouTube &amp; TikTok are video — you supply the media.</div>
+      <input id="zapierWebhookUrl" type="url" placeholder="Default / Facebook webhook" style="width:100%;margin-bottom:8px;padding:9px 11px;font-size:13px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <input id="zapierWebhookTiktok" type="url" placeholder="TikTok webhook (optional)" style="width:100%;margin-bottom:8px;padding:9px 11px;font-size:13px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <input id="zapierWebhookInstagram" type="url" placeholder="Instagram webhook (optional)" style="width:100%;margin-bottom:8px;padding:9px 11px;font-size:13px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <input id="zapierWebhookYoutube" type="url" placeholder="YouTube webhook (optional)" style="width:100%;margin-bottom:10px;padding:9px 11px;font-size:13px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:8px">
+      <button id="saveSocialBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#e6c368,#b8912f);color:#1a1508;border:none;border-radius:8px;cursor:pointer">Save &amp; Connect</button>
+      <span id="socialMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+    </div>
+
     <div style="font-size:11px;color:#5f5e57">More connectors (Google Calendar, etc.) will show up here as they're built.</div>
   </div>
 
@@ -728,6 +741,17 @@
         if (v === d.tts_voice) opt.selected = true;
         voiceSelect.appendChild(opt);
       });
+
+      const socialStatus = document.getElementById('socialStatus');
+      const plats = d.social_platforms || {};
+      const connectedPlats = Object.keys(plats).filter(p => plats[p]);
+      if (connectedPlats.length) {
+        socialStatus.textContent = connectedPlats.join(', ');
+        socialStatus.style.background = 'rgba(143,176,143,0.15)';
+        socialStatus.style.color = '#8fb08f';
+      } else {
+        socialStatus.textContent = 'Not connected';
+      }
     }).catch(() => { gmailStatus.textContent = 'Error loading'; });
   }
 
@@ -784,6 +808,26 @@
       body: JSON.stringify({ tts_voice: document.getElementById('voiceSelect').value }),
     }).then(() => { msg.textContent = 'Saved.'; })
       .catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
+  });
+
+  document.getElementById('saveSocialBtn').addEventListener('click', () => {
+    const msg = document.getElementById('socialMsg');
+    const body = {
+      zapier_webhook_url: document.getElementById('zapierWebhookUrl').value.trim(),
+      zapier_webhook_url_tiktok: document.getElementById('zapierWebhookTiktok').value.trim(),
+      zapier_webhook_url_instagram: document.getElementById('zapierWebhookInstagram').value.trim(),
+      zapier_webhook_url_youtube: document.getElementById('zapierWebhookYoutube').value.trim(),
+    };
+    if (!Object.values(body).some(v => v)) { msg.textContent = 'Paste at least one webhook URL first.'; return; }
+    msg.textContent = 'Saving…';
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json()).then(d => {
+      ['zapierWebhookUrl','zapierWebhookTiktok','zapierWebhookInstagram','zapierWebhookYoutube'].forEach(id => document.getElementById(id).value = '');
+      msg.textContent = d.social_connected ? 'Saved — connected!' : 'Saved.';
+      renderSettings();
+    }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
   });
 
   // Render the durable conversation history (pulled fresh from the server each open).
