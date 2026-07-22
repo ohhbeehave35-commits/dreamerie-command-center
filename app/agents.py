@@ -65,6 +65,13 @@ order inquiry, or collab lead, use the log_lead tool to save it. When she asks
 about existing leads/customers, use find_leads. This CRM is your long-term
 memory of the business, so lean on it.
 
+You also have a shared EVENTS tracker covering both sides of her business at
+once -- Dreamerie shop pop-ups/markets AND Suzy D livestream collabs/brand
+deals -- so nothing gets double-booked across the two identities. Use
+log_event whenever Susan mentions a market, craft fair, collab, or livestream
+date, tagging it "The Dreamerie", "Suzy D / TikTok", or "Both". Use find_events
+to check what's coming up or spot a scheduling conflict between the two sides.
+
 You can grow over time. When Susan asks you to DO something you don't have a
 tool for yet (send an email, post directly to TikTok, book a calendar event,
 etc.), immediately CALL the log_build_request tool in that same turn to queue
@@ -486,6 +493,45 @@ DELEGATION_TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Name or tag keyword to search for, e.g. 'candle' or 'livestream'."},
                 "media_type": {"type": "string", "enum": ["Photo", "Video", "Audio", "Other"], "description": "Filter by type, if relevant."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "log_event",
+        "description": (
+            "OWNER-ONLY. Log an upcoming event to the shared events tracker -- "
+            "covers BOTH sides of Susan's business (Dreamerie shop pop-ups/"
+            "markets AND Suzy D TikTok livestream collabs/brand deals) so they "
+            "can be cross-referenced in one place. Use whenever Susan mentions "
+            "a market, craft fair, collab, or livestream date."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event": {"type": "string", "description": "Short event name."},
+                "business": {"type": "string", "enum": ["The Dreamerie", "Suzy D / TikTok", "Both"], "description": "Which side of the business this belongs to."},
+                "date": {"type": "string", "description": "Date, however Susan phrased it."},
+                "time": {"type": "string", "description": "Time or time range, if given."},
+                "location": {"type": "string", "description": "Where it is, if in-person."},
+                "status": {"type": "string", "enum": ["Idea", "Tentative", "Confirmed", "Done", "Cancelled"], "description": "Default Idea if unclear."},
+                "notes": {"type": "string", "description": "Anything else worth remembering."},
+            },
+            "required": ["event"],
+        },
+    },
+    {
+        "name": "find_events",
+        "description": (
+            "OWNER-ONLY. Look up upcoming events across both sides of the "
+            "business, optionally filtered to just Dreamerie or just Suzy D, "
+            "to check for conflicts or see what's coming up."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "business": {"type": "string", "enum": ["The Dreamerie", "Suzy D / TikTok", "Both", "All"], "description": "Filter, or 'All' for everything."},
+                "search": {"type": "string", "description": "Free-text to match against event name or location."},
             },
             "required": [],
         },

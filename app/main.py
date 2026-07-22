@@ -27,6 +27,7 @@ from . import crm
 from . import emailer
 from . import social
 from . import assets
+from . import events
 from .agents import (
     build_main_brain_prompt,
     build_public_prompt,
@@ -115,9 +116,14 @@ def get_access_code() -> str:
 
 
 app = FastAPI(title="The Dreamerie Command Center")
+ALLOWED_ORIGINS = [
+    "https://dreamerie-command-center.onrender.com",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -375,6 +381,12 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                     block.input.get("query", ""),
                     block.input.get("media_type", ""),
                 )
+            elif block.name == "log_event":
+                delegated_to.append("Events Tracker")
+                answer = events.add_event(**block.input)
+            elif block.name == "find_events":
+                delegated_to.append("Events Tracker")
+                answer = events.list_events(**block.input)
             elif agent_key is None:
                 answer = f"Unknown tool: {block.name}"
             else:
@@ -436,6 +448,12 @@ def chat(req: ChatRequest) -> ChatResponse:
 def history(limit: int = 40) -> JSONResponse:
     """Return recent conversation turns from durable memory (oldest first)."""
     return JSONResponse({"history": crm.get_history(limit)})
+
+
+@app.get("/api/events")
+def get_events(business: str = "") -> JSONResponse:
+    """Owner-only. List events, optionally filtered to one side of the business."""
+    return JSONResponse({"events": events.list_events_raw(business)})
 
 
 TTS_VOICE_OPTIONS = [

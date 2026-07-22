@@ -56,6 +56,7 @@
   <div id="topnav">
     <button class="tab active" data-tab="chat">Chat</button>
     <button class="tab" data-tab="history">History</button>
+    <button class="tab" data-tab="events">Events</button>
     <button class="tab" data-tab="settings">Settings</button>
   </div>
 
@@ -70,6 +71,15 @@
 
   <div id="tab-history" style="display:none">
     <div id="historyList"><div style="color:#B4B3A8;font-size:13px">Loading…</div></div>
+  </div>
+
+  <div id="tab-events" style="display:none">
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="tab eventsFilterBtn active" data-biz="All" style="font-size:12px">All</button>
+      <button class="tab eventsFilterBtn" data-biz="The Dreamerie" style="font-size:12px">🕯️ Dreamerie</button>
+      <button class="tab eventsFilterBtn" data-biz="Suzy D / TikTok" style="font-size:12px">👑 Suzy D</button>
+    </div>
+    <div id="eventsList"><div style="color:#B4B3A8;font-size:13px">Loading…</div></div>
   </div>
 
   <div id="tab-settings" style="display:none">
@@ -140,8 +150,8 @@ function addMessage(role, text, meta) {
 }
 
 // ---- Tabs ----
-const tabs = document.querySelectorAll('.tab');
-const panels = { chat: document.getElementById('tab-chat'), history: document.getElementById('tab-history'), settings: document.getElementById('tab-settings') };
+const tabs = document.querySelectorAll('#topnav > .tab');
+const panels = { chat: document.getElementById('tab-chat'), history: document.getElementById('tab-history'), events: document.getElementById('tab-events'), settings: document.getElementById('tab-settings') };
 tabs.forEach(t => t.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -149,8 +159,32 @@ tabs.forEach(t => t.addEventListener('click', () => {
   const name = t.dataset.tab;
   panels[name].style.display = 'block';
   if (name === 'history') renderHistory();
+  if (name === 'events') renderEvents('All');
   if (name === 'settings') renderSettings();
 }));
+
+// ---- Events ----
+function renderEvents(business) {
+  document.querySelectorAll('.eventsFilterBtn').forEach(b => b.classList.toggle('active', b.dataset.biz === business));
+  const el = document.getElementById('eventsList');
+  el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">Loading…</div>';
+  const q = business && business !== 'All' ? '?business=' + encodeURIComponent(business) : '';
+  fetch('/api/events' + q).then(r => r.json()).then(d => {
+    const evs = (d && d.events) || [];
+    if (!evs.length) { el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">No events logged yet — mention one in chat.</div>'; return; }
+    el.innerHTML = '';
+    evs.forEach(f => {
+      const tag = f.Business === 'Suzy D / TikTok' ? '👑' : (f.Business === 'The Dreamerie' ? '🕯️' : '🕯️👑');
+      const div = document.createElement('div');
+      div.className = 'card';
+      div.innerHTML = '<h3>' + tag + ' ' + (f.Event || '').replace(/</g, '&lt;') + ' <span class="badge">' + (f.Status || '') + '</span></h3>' +
+        '<div class="hint">' + [f.Date, f.Time, f.Location].filter(Boolean).join(' · ').replace(/</g, '&lt;') + '</div>' +
+        (f.Notes ? '<div class="hint">' + f.Notes.replace(/</g, '&lt;') + '</div>' : '');
+      el.appendChild(div);
+    });
+  }).catch(() => { el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">Couldn\'t load events.</div>'; });
+}
+document.querySelectorAll('.eventsFilterBtn').forEach(b => b.addEventListener('click', () => renderEvents(b.dataset.biz)));
 
 // ---- History ----
 function renderHistory() {
