@@ -221,6 +221,27 @@ def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
     return JSONResponse({"ok": False}, status_code=401)
 
 
+@app.post("/api/setup")
+def setup_first_user(req: LoginRequest) -> JSONResponse:
+    """One-time bootstrap: create the first admin user if no users exist yet.
+    Disabled automatically once any user has been created."""
+    existing = users.list_users()
+    if existing:
+        return JSONResponse(
+            {"ok": False, "detail": "Setup already complete. Use /api/login."},
+            status_code=403,
+        )
+    if not req.username or not req.password:
+        return JSONResponse({"ok": False, "detail": "Username and password required"}, status_code=400)
+    ok = users.add_user(req.username, "admin@dreamerie.com", req.password, role="owner")
+    if not ok:
+        return JSONResponse({"ok": False, "detail": "Failed to create user"}, status_code=500)
+    token = users.create_session_token(req.username)
+    resp = JSONResponse({"ok": True, "detail": f"Account created for {req.username}. You are now logged in."})
+    resp.set_cookie("cc_session", token, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    return resp
+
+
 @app.post("/api/login")
 def login(req: LoginRequest, request: Request) -> JSONResponse:
     """Authenticate with username + password, return signed session token in cookie."""
