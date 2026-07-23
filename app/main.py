@@ -28,6 +28,7 @@ from . import emailer
 from . import social
 from . import assets
 from . import events
+from . import users
 from .agents import (
     build_main_brain_prompt,
     build_public_prompt,
@@ -164,6 +165,10 @@ async def access_gate(request: Request, call_next):
         return await call_next(request)
     if request.cookies.get("cc_access") == get_access_code():
         return await call_next(request)
+    # Also accept a valid session token (multi-user login)
+    session_tok = request.cookies.get("cc_session")
+    if session_tok and users.verify_session_token(session_tok):
+        return await call_next(request)
     if request.url.path.startswith("/api/") or request.url.path.startswith("/static/"):
         return JSONResponse({"detail": "locked"}, status_code=401)
     return HTMLResponse(LOCK_PAGE, status_code=401)
@@ -171,6 +176,11 @@ async def access_gate(request: Request, call_next):
 
 class UnlockRequest(BaseModel):
     code: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 # Brute-force protection on the access gate: per-IP sliding-window lockout.
@@ -209,6 +219,62 @@ def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
     attempts.append(now)
     _unlock_attempts[ip] = attempts
     return JSONResponse({"ok": False}, status_code=401)
+
+
+@app.post("/api/login")
+def login(req: LoginRequest, request: Request) -> JSONResponse:
+    """Authenticate with username + password, return signed session token in cookie."""
+    ip = _client_ip(request)
+    now = time.time()
+    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
+        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
+        return JSONResponse(
+            {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
+            status_code=429,
+        )
+    user = users.get_user(req.username)
+    if not user or not users.verify_password(req.password, user["password_hash"]):
+        attempts.append(now)
+        _unlock_attempts[ip] = attempts
+        return JSONResponse({"ok": False, "detail": "Invalid username or password"}, status_code=401)
+    _unlock_attempts.pop(ip, None)
+    users.update_last_login(req.username)
+    token = users.create_session_token(req.username)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("cc_session", token, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    return resp
+
+
+@app.post("/api/logout")
+def logout(request: Request) -> JSONResponse:
+    """Clear session cookie."""
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("cc_session")
+    resp.delete_cookie("cc_access")
+    return resp
+
+
+@app.get("/api/me")
+def get_current_user(request: Request) -> JSONResponse:
+    """Return info about the currently logged-in user."""
+    session_token = request.cookies.get("cc_session")
+    if not session_token:
+        return JSONResponse({"username": None}, status_code=401)
+    username = users.verify_session_token(session_token)
+    if not username:
+        return JSONResponse({"username": None}, status_code=401)
+    user = users.get_user(username)
+    if not user:
+        return JSONResponse({"username": None}, status_code=401)
+    return JSONResponse({
+        "ok": True,
+        "username": user["username"],
+        "email": user["email"],
+        "role": user["role"],
+        "created_at": user["created_at"],
+        "last_login": user["last_login"],
+    })
 
 
 class ChatRequest(BaseModel):
@@ -616,6 +682,62 @@ async def tts(req: TTSRequest) -> Response:
             data = await _edge_tts(text)
             return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": "edge-fallback"})
     return Response(await _edge_tts(text), media_type="audio/mpeg", headers={"X-TTS-Engine": "edge"})
+
+
+# User management endpoints (owner only, behind access gate)
+
+
+class AddUserRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: str = "owner"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.get("/api/users")
+def get_users() -> JSONResponse:
+    """Owner-only. List all users."""
+    return JSONResponse({"ok": True, "users": users.list_users()})
+
+
+@app.post("/api/users")
+def add_user(req: AddUserRequest) -> JSONResponse:
+    """Owner-only. Create a new user account."""
+    if not req.username or not req.email or not req.password:
+        return JSONResponse({"ok": False, "detail": "Missing required fields"}, status_code=400)
+    if users.add_user(req.username, req.email, req.password, req.role):
+        return JSONResponse({"ok": True, "detail": "User created"})
+    return JSONResponse({"ok": False, "detail": "User already exists or error creating user"}, status_code=400)
+
+
+@app.delete("/api/users/{username}")
+def delete_user(username: str) -> JSONResponse:
+    """Owner-only. Delete a user account."""
+    if users.delete_user(username):
+        return JSONResponse({"ok": True, "detail": "User deleted"})
+    return JSONResponse({"ok": False, "detail": "User not found"}, status_code=400)
+
+
+@app.post("/api/change-password")
+def change_password(req: ChangePasswordRequest, request: Request) -> JSONResponse:
+    """Any logged-in user. Change their own password."""
+    session_token = request.cookies.get("cc_session")
+    if not session_token:
+        return JSONResponse({"ok": False, "detail": "Not logged in"}, status_code=401)
+    username = users.verify_session_token(session_token)
+    if not username:
+        return JSONResponse({"ok": False, "detail": "Invalid session"}, status_code=401)
+    user = users.get_user(username)
+    if not user or not users.verify_password(req.current_password, user["password_hash"]):
+        return JSONResponse({"ok": False, "detail": "Current password is incorrect"}, status_code=401)
+    if not users.update_user_password(username, req.new_password):
+        return JSONResponse({"ok": False, "detail": "Failed to update password"}, status_code=500)
+    return JSONResponse({"ok": True, "detail": "Password updated"})
 
 
 # Serve the frontend
