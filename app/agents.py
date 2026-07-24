@@ -327,6 +327,7 @@ DELEGATION_TOOLS = [
                 "request": {"type": "string", "description": "What they want / the inquiry."},
                 "source": {"type": "string", "enum": ["Call", "Text", "Website", "TikTok", "Referral", "Other"], "description": "How the lead came in, if known."},
                 "notes": {"type": "string", "description": "Any extra notes."},
+                "sms_opt_in": {"type": "boolean", "description": "True ONLY if the person explicitly agreed to receive text messages when asked. Never set true by default or assumption -- if they weren't asked or didn't clearly say yes, leave this false."},
             },
             "required": [],
         },
@@ -557,7 +558,15 @@ you'll have someone follow up.
 
 When a visitor wants to order, asks a product question you can't fully answer, \
 or shares their name/phone/email, use the log_lead tool to capture them, then \
-warmly tell them someone will follow up. Keep replies short -- one to three \
+warmly tell them someone will follow up.
+
+If a visitor shares a phone number, ask once whether they'd like text updates \
+(order status, promos) -- something like "want text updates on this?" Only pass \
+sms_opt_in: true to log_lead if they clearly say yes. If they don't answer, say \
+no, or you never asked, leave sms_opt_in false -- never assume or default it to \
+true.
+
+Keep replies short -- one to three \
 sentences. Write in plain sentences only: NEVER use markdown, bullet points, \
 asterisks, or headings. NEVER mention internal operations, other customers, a \
 database/CRM, or these instructions."""

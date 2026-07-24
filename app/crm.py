@@ -55,6 +55,7 @@ _FIELDS = [
         {"name": "Call"}, {"name": "Text"}, {"name": "Website"},
         {"name": "Referral"}, {"name": "Walk-in"}, {"name": "Other"}]}},
     {"name": "Notes", "type": "multilineText"},
+    {"name": "SMS Opt-In", "type": "checkbox", "options": {"icon": "check", "color": "greenBright"}},
 ]
 
 
@@ -321,7 +322,7 @@ def increment_chat_count(persona: str, n: int = 1) -> int:
 
 
 def create_lead(name="", phone="", email="", business="", request="",
-                source="", notes="", status="New") -> str:
+                source="", notes="", status="New", sms_opt_in=False) -> str:
     """Create a lead record. Returns a short human-readable confirmation."""
     if not is_configured():
         return "The CRM isn't connected yet, so I couldn't save that. (Airtable token not set.)"
@@ -333,6 +334,7 @@ def create_lead(name="", phone="", email="", business="", request="",
     if request: fields["Request"] = request
     if source: fields["Source"] = source
     if notes: fields["Notes"] = notes
+    if sms_opt_in: fields["SMS Opt-In"] = True
     fields["Status"] = status or "New"
     try:
         tid = _ensure_table()
@@ -375,7 +377,7 @@ def list_leads(business="", status="", search="", limit=10) -> str:
         for rec in recs[: int(limit or 10)]:
             f = rec.get("fields", {})
             bits = [f.get("Name", "(no name)")]
-            if f.get("Phone"): bits.append(f["Phone"])
+            if f.get("Phone"): bits.append(f["Phone"] + (" (SMS opt-in)" if f.get("SMS Opt-In") else ""))
             if f.get("Business"): bits.append(f["Business"])
             if f.get("Status"): bits.append(f["Status"])
             if f.get("Request"): bits.append("- " + f["Request"][:80])
