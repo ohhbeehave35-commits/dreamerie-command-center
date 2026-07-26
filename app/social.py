@@ -229,3 +229,33 @@ def publish_post(post_id: str) -> str:
             return f"Zapier rejected it (HTTP {hook.status_code}) -- marked Failed. Check the Zap is on."
     except Exception as e:
         return f"Couldn't publish that post: {type(e).__name__}: {e}"
+
+def list_posts_raw(limit: int = 60) -> list:
+    """Structured post list for the Content tab. See assets.list_assets_raw for
+    why this exists alongside the string-returning list_posts()."""
+    if not crm.is_configured():
+        return []
+    try:
+        tid = _ensure_posts_table()
+        with httpx.Client(timeout=30) as c:
+            r = c.get(
+                f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}",
+                headers=crm._headers(),
+                params={"pageSize": str(max(1, min(limit, 100)))},
+            )
+            r.raise_for_status()
+        out = []
+        for rec in r.json().get("records", []):
+            f = rec.get("fields", {})
+            out.append({
+                "id": rec.get("id", ""),
+                "platform": f.get("Platform", ""),
+                "content": f.get("Content", ""),
+                "status": f.get("Status", "Draft"),
+                "media_url": f.get("Media URL", "") or f.get("MediaURL", ""),
+                "created": rec.get("createdTime", ""),
+            })
+        out.sort(key=lambda a: a.get("created", ""), reverse=True)
+        return out
+    except Exception:
+        return []

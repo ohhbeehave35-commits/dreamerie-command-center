@@ -543,6 +543,23 @@ def get_events(business: str = "") -> JSONResponse:
     return JSONResponse({"events": events.list_events_raw(business)})
 
 
+@app.get("/api/assets")
+def get_assets() -> JSONResponse:
+    """Owner-only. The media library, newest first.
+
+    Susan's assistant saves photos and clips as she shares them, but until now
+    there was no way to SEE what had been saved -- only to ask for it by name.
+    The Media tab reads this.
+    """
+    return JSONResponse({"assets": assets.list_assets_raw()})
+
+
+@app.get("/api/social_posts")
+def get_social_posts() -> JSONResponse:
+    """Owner-only. Social drafts and published posts, newest first."""
+    return JSONResponse({"posts": social.list_posts_raw()})
+
+
 TTS_VOICE_OPTIONS = [
     "en-GB-RyanNeural", "en-US-AndrewNeural", "en-US-GuyNeural",
     "en-US-EmmaNeural", "en-US-AriaNeural", "en-GB-SoniaNeural",

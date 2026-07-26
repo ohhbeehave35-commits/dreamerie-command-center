@@ -116,3 +116,39 @@ def find_assets(query: str = "", media_type: str = "", limit: int = 10) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Couldn't search the asset library: {type(e).__name__}: {e}"
+
+def list_assets_raw(limit: int = 60) -> list:
+    """Structured asset list for the dashboard UI.
+
+    find_assets() returns a formatted string for the agent to read aloud; the
+    Media tab needs real fields to render thumbnails, so this returns dicts.
+    Never raises -- an empty list means "nothing to show", which the UI states
+    plainly rather than pretending the library is broken.
+    """
+    if not crm.is_configured():
+        return []
+    try:
+        tid = _ensure_assets_table()
+        with httpx.Client(timeout=30) as c:
+            r = c.get(
+                f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}",
+                headers=crm._headers(),
+                params={"pageSize": str(max(1, min(limit, 100)))},
+            )
+            r.raise_for_status()
+        out = []
+        for rec in r.json().get("records", []):
+            f = rec.get("fields", {})
+            out.append({
+                "id": rec.get("id", ""),
+                "name": f.get("Name", "Untitled"),
+                "url": f.get("URL", ""),
+                "type": f.get("Type", ""),
+                "tags": f.get("Tags", ""),
+                "notes": f.get("Notes", ""),
+                "created": rec.get("createdTime", ""),
+            })
+        out.sort(key=lambda a: a.get("created", ""), reverse=True)
+        return out
+    except Exception:
+        return []

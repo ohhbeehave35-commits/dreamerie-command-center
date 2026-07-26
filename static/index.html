@@ -49,6 +49,8 @@
     <a href="#" id="navTasks" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Tasks</a>
     <a href="#" id="navHistory" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">History</a>
     <a href="#" id="navEvents" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Events</a>
+    <a href="#" id="navMedia" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Media</a>
+    <a href="#" id="navContent" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Content</a>
     <a href="#" id="navSettings" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Settings</a>
     <a href="/static/basic.html" style="color:#9aa0aa;text-decoration:none;font-size:13px">Basic UI</a>
     <div style="width:32px;height:32px;border-radius:50%;background:#141310;box-shadow:0 0 0 1px rgba(212,175,55,0.5);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#d4af37">V</div>
@@ -163,6 +165,28 @@
   </div>
 
   <!-- Settings panel: self-serve connectors + admin config (no Render access needed) -->
+  <div id="panelMedia" style="display:none;position:absolute;top:110px;left:50%;transform:translateX(-50%);width:680px;max-height:640px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">MEDIA LIBRARY</div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:24px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="font-size:12px;color:#7d7c74;margin-bottom:16px">Every photo and clip saved so far &mdash; product shots, livestream stills, logos. Kept automatically as you share them, so you never hunt for the same link twice.</div>
+    <div id="mediaGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px">
+      <div style="color:#7d7c74;font-size:13px">Loading&hellip;</div>
+    </div>
+  </div>
+
+  <div id="panelContent" style="display:none;position:absolute;top:110px;left:50%;transform:translateX(-50%);width:680px;max-height:640px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">CONTENT</div>
+      <button class="panelClose" style="background:none;border:none;color:#9aa0aa;font-size:24px;cursor:pointer;line-height:1">&times;</button>
+    </div>
+    <div style="font-size:12px;color:#7d7c74;margin-bottom:16px">Social drafts waiting on your approval, and everything already published. Newest first.</div>
+    <div id="contentList" style="display:flex;flex-direction:column;gap:10px">
+      <div style="color:#7d7c74;font-size:13px">Loading&hellip;</div>
+    </div>
+  </div>
+
   <div id="panelSettings" style="display:none;position:absolute;top:60px;left:50%;transform:translateX(-50%);width:520px;max-height:780px;overflow-y:auto;z-index:5;background:rgba(10,9,7,0.96);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.3);border-radius:16px;padding:22px 26px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <div style="font-weight:700;font-size:15px;letter-spacing:0.14em;color:#e6cf88">SETTINGS</div>
@@ -706,12 +730,87 @@
   const navFlow = document.getElementById('navFlow');
   const navHistory = document.getElementById('navHistory');
   const navEvents = document.getElementById('navEvents');
+  const navMedia = document.getElementById('navMedia');
+  const navContent = document.getElementById('navContent');
+  const panelMedia = document.getElementById('panelMedia');
+  const panelContent = document.getElementById('panelContent');
   const navSettings = document.getElementById('navSettings');
+  // ---------- Media library ----------
+  // Her assistant saves assets as she shares them, but until now there was no way
+  // to SEE them -- only to ask for one by name. Newest first.
+  const renderMedia = async () => {
+    const grid = document.getElementById('mediaGrid');
+    grid.innerHTML = '<div style="color:#7d7c74;font-size:13px">Loading&hellip;</div>';
+    try {
+      const r = await fetch('/api/assets');
+      const d = await r.json();
+      const items = d.assets || [];
+      if (!items.length) {
+        grid.innerHTML = '<div style="color:#7d7c74;font-size:13px;grid-column:1/-1">Nothing saved yet. Share a photo or clip in chat and it will be kept here automatically.</div>';
+        return;
+      }
+      const esc = (t) => String(t || '').replace(/</g, '&lt;');
+      const isImg = (u) => /\.(png|jpe?g|gif|webp|avif|svg)(\?|#|$)/i.test(u || '');
+      const isVid = (u) => /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(u || '');
+      grid.innerHTML = items.map(function (a) {
+        const name = esc(a.name || 'Untitled');
+        let thumb;
+        if (isImg(a.url)) {
+          thumb = '<img src="' + a.url + '" alt="' + name + '" loading="lazy" style="width:100%;aspect-ratio:1;object-fit:cover;display:block">';
+        } else if (isVid(a.url)) {
+          thumb = '<video src="' + a.url + '" muted playsinline preload="metadata" style="width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#000"></video>';
+        } else {
+          thumb = '<div style="width:100%;aspect-ratio:1;display:grid;place-items:center;font-size:30px;background:rgba(212,175,55,0.07)">&#128206;</div>';
+        }
+        const tags = a.tags ? '<div style="font-size:10px;color:#7d7c74;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(a.tags) + '</div>' : '';
+        return '<a href="' + a.url + '" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid rgba(212,175,55,0.22);border-radius:10px;overflow:hidden;display:block;background:rgba(20,19,16,0.6)">'
+             + thumb
+             + '<div style="padding:8px 9px"><div style="font-size:11.5px;color:#e6e2d6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' + tags + '</div></a>';
+      }).join('');
+    } catch (e) {
+      grid.innerHTML = '<div style="color:#c9452f;font-size:13px;grid-column:1/-1">Could not load the media library. It may not be connected yet.</div>';
+    }
+  };
+
+  // ---------- Content: social drafts + published ----------
+  const renderContent = async () => {
+    const list = document.getElementById('contentList');
+    list.innerHTML = '<div style="color:#7d7c74;font-size:13px">Loading&hellip;</div>';
+    try {
+      const r = await fetch('/api/social_posts');
+      const d = await r.json();
+      const items = d.posts || [];
+      if (!items.length) {
+        list.innerHTML = '<div style="color:#7d7c74;font-size:13px">No posts yet. Ask for a TikTok caption or a shop announcement and the draft will show up here.</div>';
+        return;
+      }
+      const esc = (t) => String(t || '').replace(/</g, '&lt;');
+      const ICON = { TikTok: '♪', Instagram: '◉', Facebook: 'f', YouTube: '▶', X: '✕' };
+      list.innerHTML = items.map(function (p) {
+        const published = String(p.status || '').toLowerCase() === 'published';
+        const col = published ? '#8fb08a' : '#d4af37';
+        const body = esc(p.content);
+        const shown = body.length > 260 ? body.slice(0, 260) + '…' : body;
+        return '<div style="border:1px solid rgba(212,175,55,0.2);border-radius:10px;padding:12px 14px;background:rgba(20,19,16,0.5)">'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'
+          + '<span style="font-size:12px;color:#e6cf88">' + (ICON[p.platform] || '●') + '</span>'
+          + '<span style="font-size:12px;font-weight:600;color:#e6e2d6">' + esc(p.platform || 'Post') + '</span>'
+          + '<span style="margin-left:auto;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:' + col + '">' + esc(p.status || 'Draft') + '</span>'
+          + '</div>'
+          + '<div style="font-size:13px;color:#b8b5aa;line-height:1.5;white-space:pre-wrap">' + shown + '</div>'
+          + '</div>';
+      }).join('');
+    } catch (e) {
+      list.innerHTML = '<div style="color:#c9452f;font-size:13px">Could not load posts. The queue may not be connected yet.</div>';
+    }
+  };
+
   const showPanel = (p) => {
     panelAgents.style.display = 'none'; panelTasks.style.display = 'none';
     panelFlow.style.display = 'none'; panelHistory.style.display = 'none';
     panelEvents.style.display = 'none'; panelSettings.style.display = 'none';
-    if (p) { p.style.display = 'block'; if (p === panelFlow) renderFlow(); if (p === panelHistory) renderHistory(); if (p === panelEvents) renderEvents('All'); if (p === panelSettings) renderSettings(); }
+    panelMedia.style.display = 'none'; panelContent.style.display = 'none';
+    if (p) { p.style.display = 'block'; if (p === panelFlow) renderFlow(); if (p === panelHistory) renderHistory(); if (p === panelEvents) renderEvents('All'); if (p === panelMedia) renderMedia(); if (p === panelContent) renderContent(); if (p === panelSettings) renderSettings(); }
   };
   navCommand.addEventListener('click', (e) => { e.preventDefault(); showPanel(null); });
   navAgents.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelAgents.style.display === 'block' ? null : panelAgents); });
@@ -719,6 +818,8 @@
   navFlow.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelFlow.style.display === 'block' ? null : panelFlow); });
   navHistory.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelHistory.style.display === 'block' ? null : panelHistory); });
   navEvents.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelEvents.style.display === 'block' ? null : panelEvents); });
+  navMedia.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelMedia.style.display === 'block' ? null : panelMedia); });
+  navContent.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelContent.style.display === 'block' ? null : panelContent); });
   navSettings.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelSettings.style.display === 'block' ? null : panelSettings); });
   document.querySelectorAll('.panelClose').forEach(b => b.addEventListener('click', () => showPanel(null)));
 
