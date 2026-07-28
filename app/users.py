@@ -114,9 +114,26 @@ def _ensure_users_table() -> str:
         return _users_table_id_cache
 
 
-def get_user(username: str) -> Optional[dict]:
-    """Fetch a user record by username. Returns dict with keys:
-    username, email, password_hash, role, created_at, last_login, record_id"""
+class UserLookupUnavailable(Exception):
+    """The user store could not be reached.
+
+    Deliberately distinct from "no such user". get_user() collapses both into
+    None, and the login path then counted a datastore outage as a wrong
+    password: the person was told their credentials were bad, the attempt was
+    charged to the per-IP lockout, and it also fed the deployment-wide
+    backstop. A few seconds of trouble locked a real user out for fifteen
+    minutes; a longer spell locked out everybody, all of them told it was their
+    password.
+    """
+
+
+def lookup_user(username: str) -> Optional[dict]:
+    """get_user, except an unreachable store RAISES instead of looking absent.
+
+    Use this anywhere the difference between "wrong credentials" and "we could
+    not check" changes what the person is told, or what is counted against
+    them. Returns None only for a genuine not-found.
+    """
     if not crm.is_configured():
         return None
     try:
@@ -142,6 +159,20 @@ def get_user(username: str) -> Optional[dict]:
                 "last_login": fields.get("LastLogin", ""),
             }
     except Exception as e:
+        raise UserLookupUnavailable(str(e)) from e
+
+
+def get_user(username: str) -> Optional[dict]:
+    """Fetch a user record by username. Returns dict with keys:
+    username, email, password_hash, role, created_at, last_login, record_id
+
+    Contract unchanged: an unreachable store still reads as None, so none of
+    this function's many callers change behaviour. Callers that must tell those
+    two cases apart use lookup_user() instead.
+    """
+    try:
+        return lookup_user(username)
+    except UserLookupUnavailable as e:
         print(f"Error fetching user {username}: {e}")
         return None
 

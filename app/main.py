@@ -640,8 +640,20 @@ def login(req: LoginRequest, request: Request) -> JSONResponse:
             status_code=429,
         )
 
-    # Look up user
-    user = users.get_user(req.username)
+    # Look up user. A datastore outage must NOT be reported as a wrong password:
+    # doing so charged the attempt to the lockout above and to the
+    # deployment-wide backstop, so a few seconds of trouble locked real people
+    # out for fifteen minutes while telling them their credentials were wrong.
+    # Fail loudly and charge them nothing.
+    try:
+        user = users.lookup_user(req.username)
+    except users.UserLookupUnavailable:
+        log.error("Login blocked: user store unreachable")
+        return JSONResponse(
+            {"ok": False, "detail": "Sign-in is temporarily unavailable. Nothing is wrong with "
+                                    "your password -- please try again in a minute."},
+            status_code=503,
+        )
     if not user or not users.verify_password(req.password, user["password_hash"]):
         attempts.append(now)
         _unlock_attempts[ip] = attempts
