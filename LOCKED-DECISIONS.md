@@ -26,8 +26,34 @@ becomes that business when you switch to it.
 ## Business identity notes (context for the compliance-first sub-agents)
 
 - **NS Peptides** (`peptides` mode): research-use-only positioning. Agent makes
-  ZERO health / medical / dosing / benefit claims, any phrasing. "Research use
-  only · not for human consumption · buyer assumes all risk." Domain nspeptides.com.
+  ZERO health / medical / dosing / benefit claims, any phrasing.
+  Domain nspeptides.com · info@nspeptides.com.
+
+  **CANONICAL DISCLAIMER — reproduce exactly, this is the one true rendering:**
+
+  > `RESEARCH USE ONLY · NOT FOR HUMAN CONSUMPTION · FOR LABORATORY RESEARCH ONLY · BUYER ASSUMES ALL RISK`
+
+  Four clauses, `·` separators. An earlier version of this file listed only
+  three (dropping FOR LABORATORY RESEARCH ONLY) while the shipped prompt used
+  four — so the "locked" doc contradicted the code on a string the agent is
+  ordered to reproduce *verbatim*, and the next session would have "corrected"
+  the prompt back to the weaker form. Four clauses matches the owner's printed
+  flyer and is now canonical. If you change it, change it in
+  `app/agents.py` (both sites) and `app/annabelle_updates.json` in the same commit.
+
+  **PROVENANCE of the product facts** (so a future reviewer does not re-flag
+  them as unsourced — they are not in any repo file by design): the 16-compound
+  catalog, the tagline, `info@nspeptides.com`, `>=98% purity`, and
+  `batch-tested for purity and potency` all come from the owner's own NS
+  Peptides flyers, supplied 28 Jul. The source images live at
+  `Dropbox\Logos and Misc\Clients\NS Peptides\Artwork\`. **No prices exist** —
+  none were supplied, and none may be invented.
+
+  **DELIBERATELY NOT USED:** the flyer's "discreet shipping" line. It is fine on
+  a printed flyer but an agent *offering* it signals a buyer who does not want
+  the purchase seen — not a laboratory procurement motive — and next to
+  pharmacologically active compounds it undercuts the research-use-only shield
+  rather than supporting it. The prompt now explicitly forbids it.
 - **Bear Arms** (`bear_arms` mode): NYC firearms **accessories** + apparel, LLC no
   FFL. Agent gives no legal advice → NY firearms attorney; FFL-to-FFL supply;
   ammo/accessories/merch lane only until an FFL exists; firearm-friendly processor.
