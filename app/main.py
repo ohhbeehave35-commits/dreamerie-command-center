@@ -1789,24 +1789,32 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                     answer = f"Drive save error: {e}"
             elif block.name == "run_diagnostic":
                 delegated_to.append("Diagnostic")
-                report = diagnostic.run_all()
-                lines = [f"System status: {report['summary'].upper()} "
-                         f"({report['counts']['green']} ok, "
-                         f"{report['counts']['red']} failing, "
-                         f"{report['counts']['unconfigured']} unconfigured, "
-                         f"{report['counts']['total']} total)."]
-                for s in report["services"]:
-                    if s.get("ok") is False:
-                        lines.append(f"  FAIL {s['name']}: {s.get('error') or 'probe failed'} — {s.get('hint') or ''}")
-                    elif s.get("ok") is True:
-                        lat = s.get("latency_ms")
-                        lines.append(f"  OK   {s['name']}" + (f" ({lat} ms)" if lat is not None else ""))
-                    elif not s.get("configured"):
-                        lines.append(f"  --   {s['name']}: not configured — {s.get('hint') or ''}")
-                    else:
-                        lines.append(f"  ?    {s['name']}: configured, not actively probed")
-                lines.append("Full board: /diagnostic")
-                answer = "\n".join(lines)
+                # Guarded like its neighbours (drive save, etc.): a crash inside
+                # a tool must degrade to a tool-result string, NEVER escape and
+                # 500 the whole chat. It did exactly that here -- run_all()
+                # referenced an undefined PROBES -- so asking "is everything
+                # working?" took the entire assistant down instead of answering.
+                try:
+                    report = diagnostic.run_all()
+                    lines = [f"System status: {report['summary'].upper()} "
+                             f"({report['counts']['green']} ok, "
+                             f"{report['counts']['red']} failing, "
+                             f"{report['counts']['unconfigured']} unconfigured, "
+                             f"{report['counts']['total']} total)."]
+                    for s in report["services"]:
+                        if s.get("ok") is False:
+                            lines.append(f"  FAIL {s['name']}: {s.get('error') or 'probe failed'} — {s.get('hint') or ''}")
+                        elif s.get("ok") is True:
+                            lat = s.get("latency_ms")
+                            lines.append(f"  OK   {s['name']}" + (f" ({lat} ms)" if lat is not None else ""))
+                        elif not s.get("configured"):
+                            lines.append(f"  --   {s['name']}: not configured — {s.get('hint') or ''}")
+                        else:
+                            lines.append(f"  ?    {s['name']}: configured, not actively probed")
+                    lines.append("Full board: /diagnostic")
+                    answer = "\n".join(lines)
+                except Exception as e:
+                    answer = f"Couldn't run the system diagnostic ({type(e).__name__}: {e})."
             elif block.name == "ask_seo_auditor":
                 delegated_to.append("SEO Auditor")
                 audit_text = block.input.get("audit_results", "")

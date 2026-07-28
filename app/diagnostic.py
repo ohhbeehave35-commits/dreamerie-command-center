@@ -205,6 +205,28 @@ def _probe_gdrive() -> dict:
             "hint": None if ok else "Reconnect at /api/drive/connect."}
 
 
+# The registry run_all() iterates. This was defined in the flagship but never
+# ported here, so run_all() raised NameError on the first probe and the
+# run_diagnostic tool 500'd every time Annabelle was asked "is everything
+# working?" -- exactly the question a user asks when things feel broken.
+# Only the integrations this deployment actually has; no buildertrend / docusign
+# / lightspeed here.
+PROBES = [
+    _probe_anthropic,
+    _probe_airtable,
+    _probe_stripe,
+    _probe_hubspot,
+    _probe_twilio,
+    _probe_gmail,
+    _probe_calendar,
+    _probe_social,
+    _probe_elevenlabs,
+    _probe_xai,
+    _probe_dropbox,
+    _probe_gdrive,
+]
+
+
 def run_all() -> dict:
     """Run every probe and return {summary, counts, services, ran_at}."""
     started = time.perf_counter()
