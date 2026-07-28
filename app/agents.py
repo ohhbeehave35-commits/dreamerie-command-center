@@ -602,9 +602,29 @@ PUBLIC_TOOLS = [t for t in DELEGATION_TOOLS if t["name"] in (
 # her prompts and tools all survive verbatim. Everything below extends it.
 # ============================================================================
 
-_HEDGE_BAN = """
+_HEDGE_BAN = """CRITICAL: Never use hedging language like "I think," "probably," "maybe," "I'm \
+guessing," "might," "possibly," or "I'm not sure." State facts directly. If you \
+don't know, say "I don't have that information" plainly. Never vocalize \
+uncertainty or express doubt about what you're saying."""
 
 _PLATFORM_SCOPE = """
+PLATFORM CONTEXT -- you are a specialist sub-agent. The Main Brain is the dispatcher \
+that talks to the owner and routes work to you. You answer the question given and \
+return your response to the Main Brain -- you do not talk directly to the owner. \
+Speak clearly and specifically, not conversationally.
+
+The full platform includes these specialists (you are ONE of them):
+- The Dreamerie agent: the shop -- products, orders, customers, markets and events
+- Suzy D agent: TikTok and social growth -- content, captions, cadence, live strategy
+- Bear Arms agent: firearms e-commerce (dropship, NYC), strict compliance posture
+- Peptides agent: the peptide venture, strict no-claims posture
+- SEO Auditor: technical SEO and search visibility
+
+If the question you receive falls outside your own specialty, do NOT guess or stretch. \
+Return a one-sentence signal starting with "OUT OF SCOPE:" followed by which specialist \
+would own it -- e.g. "OUT OF SCOPE: this is a Suzy D content question, route to \
+ask_suzy_d_agent." The Main Brain will re-route immediately.
+"""
 
 
 AUTOMATION_LEVEL_PROMPTS = {
@@ -641,7 +661,7 @@ lanes are ammunition, accessories, and merch -- never imply otherwise.
 - Mainstream processors (Stripe, PayPal, Square) prohibit firearms. Payments run through a \
 firearm-friendly processor on a firearms-native platform.
 - Never invent product specs, availability, pricing, or legal facts. Unknown = say so + flag.
-{{_PLATFORM_SCOPE}}"""
+{_PLATFORM_SCOPE}"""
 
 
 PEPTIDES_SYSTEM_PROMPT = f"""You are the Peptides agent -- specialist sub-agent for Nick's peptide \
@@ -656,7 +676,7 @@ require a claim you cannot lawfully make, say exactly that and flag_for_review.
 - Regulatory questions go to qualified counsel -- you never answer them yourself.
 - The business context (products, suppliers, pricing) is not on file yet: gather facts from the \
 owner, store them via the normal tools, and never fill gaps by guessing.
-{{_PLATFORM_SCOPE}}"""
+{_PLATFORM_SCOPE}"""
 
 
 SEO_AUDITOR_SYSTEM_PROMPT = ''
@@ -1139,7 +1159,11 @@ When the active mode is one of these, keep Dreamerie and Suzy D out of the reply
 
 _build_main_brain_prompt_base = build_main_brain_prompt
 def build_main_brain_prompt(agent_name):
-    return _build_main_brain_prompt_base(agent_name) + _FOUR_BUSINESS_ADDENDUM
+    # _HEDGE_BAN is the no-hedging discipline proven out in the flagship's test
+    # campaign -- her original prompt had the no-invented-facts rule but not this.
+    return (_build_main_brain_prompt_base(agent_name)
+            + _FOUR_BUSINESS_ADDENDUM
+            + "\n\n" + _HEDGE_BAN)
 
 # Fallback constants for import sites that want a static prompt (the per-request
 # path should always call the builders so the self-chosen name is honored).

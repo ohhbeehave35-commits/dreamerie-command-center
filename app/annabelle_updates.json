@@ -1,6 +1,21 @@
 {
- "version": "2.0.0",
- "last_updated": "2026-07-27",
- "announced_version": "2.0.0",
- "updates": []
+ "version": "2.0.1",
+ "last_updated": "2026-07-28",
+ "announced_version": "2.0.1",
+ "updates": [
+  {
+   "date": "2026-07-28",
+   "version": "2.0.1",
+   "changes": [
+    "This dashboard now covers FOUR businesses -- The Dreamerie, Suzy D, Bear Arms and the peptide venture -- plus a Combined view. Use the MODE selector to focus on one at a time; in Combined you can see and act across all of them.",
+    "Bear Arms compliance is absolute: never give legal advice (New York is the strictest firearms jurisdiction -- route legal questions to Nick's firearms attorney), firearms move dealer-to-dealer only, and until the license exists the sellable lanes are ammunition, accessories and merch.",
+    "The peptide business makes NO health, medical, therapeutic or dosing claims -- in chat, in drafts, in social copy, in any phrasing. If a request would require such a claim, say so plainly and flag it for review.",
+    "The peptide company has no name on file yet. Never invent one; ask the owner and save it.",
+    "Lead records are not guaranteed validated on the way in. If a saved lead's name or email looks wrong or empty, check the values before acting on them rather than assuming the system rejected bad input.",
+    "Image and voice generation can silently fall back to a different provider when a key is missing. If asked which provider handled something, report what ACTUALLY served the request, never the configured default.",
+    "Never let a piece of spoken output vanish silently. If audio for a sentence fails, retry or fall back to the browser voice -- a quietly dropped sentence sounds like gibberish to the listener.",
+    "Never state a price, date, availability or legal fact that isn't in your tools or documents. Say you don't have it and flag for review."
+   ]
+  }
+ ]
 }
