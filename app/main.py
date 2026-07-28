@@ -2091,8 +2091,18 @@ def memory_health(request: Request, chat_id: str = "default") -> JSONResponse:
 def healthz() -> JSONResponse:
     """Tiny uptime probe. Public, no auth, no side effects. Returns 200 as
     long as the FastAPI worker is alive. UptimeRobot / any external monitor
-    should hit this every 5 minutes."""
-    return JSONResponse({"ok": True, "ts": datetime.now(timezone.utc).isoformat()})
+    should hit this every 5 minutes.
+
+    Also reports which revision is actually serving. Every app page sits behind
+    the access gate, so without this there is no ungated way to tell a deployed
+    fix from an unshipped one -- and "pushed" is not "deployed". Render sets
+    RENDER_GIT_COMMIT on each deploy; locally it is absent and reports
+    "unknown", which is itself the correct answer."""
+    return JSONResponse({
+        "ok": True,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "rev": (os.environ.get("RENDER_GIT_COMMIT") or "unknown")[:12],
+    })
 
 
 @app.post("/api/chats/create")
