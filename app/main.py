@@ -34,6 +34,7 @@ from openai import OpenAI
 
 from . import crm
 from . import events
+from . import brand_identity
 from . import password_reset
 from . import toolbox
 from . import emailer
@@ -2091,6 +2092,52 @@ def _get_update_injection() -> str:
     return ""
 
 
+def _normalize_url(u: str) -> str:
+    """Tidy a hand-typed website: trim and prepend https:// when no scheme is
+    present, so "thedreamerie.com" becomes a real clickable URL. Grooming, not
+    validation -- we reject nothing."""
+    u = (u or "").strip()
+    if u and not re.match(r"^https?://", u, re.I):
+        u = "https://" + u
+    return u
+
+
+def _business_websites() -> dict:
+    """{brand_key: url} for each business that has a website saved."""
+    if not crm.is_configured():
+        return {}
+    out = {}
+    for b in brand_identity.BRANDS:
+        v = crm.get_setting(f"website__{b}", "")
+        if v:
+            out[b] = v
+    return out
+
+
+def _website_context(mode: str) -> str:
+    """A prompt snippet naming the business website(s) so Annabelle shares the
+    real URL instead of inventing one. Scoped to the active business; in
+    combined mode she is told all of them."""
+    sites = _business_websites()
+    if not sites:
+        return ""
+    labels = brand_identity.BRANDS
+    # A specific business is active: give her ONLY that business's site, never
+    # another brand's -- handing her the Dreamerie URL while she's focused on
+    # Bear Arms is exactly the cross-brand leak the whole mode system prevents.
+    # No site for the active business => say nothing.
+    if mode in labels:
+        if mode in sites:
+            return ("\n\nThe " + labels[mode] + " website is " + sites[mode]
+                    + " -- share this exact URL when asked where to find or buy from "
+                    + labels[mode] + ", and use it in " + labels[mode]
+                    + " content. Never invent or alter a URL.")
+        return ""
+    # Combined (or no specific business): she may reference any of them.
+    listed = "; ".join(labels[b] + ": " + url for b, url in sites.items())
+    return "\n\nBusiness websites (use the exact URL, never invent one): " + listed + "."
+
+
 def _owner_chat_setup(req: ChatRequest):
     """System prompt + tool set for an owner turn, derived from the active mode.
     Shared by /api/chat and /api/chat/stream so the two can never drift."""
@@ -2100,6 +2147,7 @@ def _owner_chat_setup(req: ChatRequest):
     if req.mode in MODE_TOOLS:
         tools = [t for t in tools if t["name"] in MODE_TOOLS[req.mode]]
         sys_prompt += MODE_PROMPTS[req.mode]
+    sys_prompt += _website_context(req.mode)
     return sys_prompt, tools
 
 
@@ -2664,6 +2712,13 @@ class SettingsUpdate(BaseModel):
     media_video_provider: str = ""  # "grok" (only option currently)
     automation_level: str = ""
     chat_model_default: str = ""  # MODEL_CHOICES slug
+    # Per-business public website URLs. Stored as website__<brand>, surfaced to
+    # Annabelle so she shares the right site with customers and uses it in
+    # content. Blank = untouched (same convention as every other field here).
+    website_dreamerie: str = ""
+    website_suzy_d: str = ""
+    website_bear_arms: str = ""
+    website_peptides: str = ""
 
 
 @app.get("/api/settings")
@@ -2697,6 +2752,8 @@ def get_settings(request: Request) -> JSONResponse:
         "zapier_webhook_url_tiktok": crm.get_setting(f"{social.WEBHOOK_KEY}_tiktok", "") if crm.is_configured() else "",
         "model_options": [{"key": k, **v} for k, v in MODEL_CHOICES.items()],
         "access_code_is_custom": bool(crm.get_setting("access_code_override", "")),
+        **{f"website_{b}": (crm.get_setting(f"website__{b}", "") if crm.is_configured() else "")
+           for b in brand_identity.BRANDS},
         "calendar_connected": gcal.is_configured(),
         "calendar_configurable": bool(gcal.CLIENT_ID and gcal.CLIENT_SECRET),
         "social_connected": social.is_configured(),
@@ -2721,7 +2778,12 @@ def save_settings(req: SettingsUpdate, request: Request) -> JSONResponse:
     own account only (per-user override), leaving the global defaults intact."""
     username = _get_session_username(request)
     user = users.get_user(username) if username else None
-    is_owner = (user or {}).get("role") == "owner"
+    # An access-code deployment (Susan's) has no per-user login: whoever holds
+    # the code IS the owner. Without this, is_owner was always False for her and
+    # EVERY admin setting silently no-op'd -- she could type, click Save, see
+    # "Saved", and nothing persisted. Multi-user deployments set no cc_access,
+    # so this grants nothing there.
+    is_owner = ((user or {}).get("role") == "owner") or _access_authenticated(request)
 
     # Admin-only settings — only owners may change these
     if is_owner:
@@ -2760,6 +2822,10 @@ def save_settings(req: SettingsUpdate, request: Request) -> JSONResponse:
             crm.set_setting("media_image_provider", req.media_image_provider.strip())
         if req.media_video_provider.strip() in ("grok",):
             crm.set_setting("media_video_provider", req.media_video_provider.strip())
+        for b in brand_identity.BRANDS:
+            raw = getattr(req, f"website_{b}", "")
+            if raw.strip():
+                crm.set_setting(f"website__{b}", _normalize_url(raw))
 
     # Per-user settings (voice, model, automation) -- any logged-in user saves
     # these to their own account; owners save globally so new users inherit them.

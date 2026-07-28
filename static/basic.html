@@ -112,6 +112,17 @@
     </div>
 
     <div class="card">
+      <h3>Business Websites</h3>
+      <div class="hint">Your public site for each business. Your assistant shares the exact address when a customer asks where to find you, and uses it in posts — so it never guesses a link. Leave any blank.</div>
+      <input id="webDreamerie" class="field" type="url" placeholder="The Dreamerie — website">
+      <input id="webSuzyD" class="field" type="url" placeholder="Suzy D — website">
+      <input id="webBearArms" class="field" type="url" placeholder="Bear Arms — website">
+      <input id="webPeptides" class="field" type="url" placeholder="NS Peptides — website">
+      <button id="saveWebsitesBtn" class="savebtn">Save Websites</button>
+      <span id="websitesMsg" class="msgline"></span>
+    </div>
+
+    <div class="card">
       <h3>Usage &amp; Limits <span style="font-weight:400;color:#6B6A63;font-size:11px;text-transform:none">resets monthly</span></h3>
       <div id="usageRows"></div>
       <button id="saveCapsBtn" class="savebtn">Save Limits</button>
@@ -262,6 +273,11 @@ function renderSettings() {
     badge(gmailStatus, d.gmail_connected, 'Connected', 'Not connected');
     accessStatus.textContent = d.access_code_is_custom ? 'Custom' : 'Default';
 
+    document.getElementById('webDreamerie').value = d.website_dreamerie || '';
+    document.getElementById('webSuzyD').value = d.website_suzy_d || '';
+    document.getElementById('webBearArms').value = d.website_bear_arms || '';
+    document.getElementById('webPeptides').value = d.website_peptides || '';
+
     const usage = document.getElementById('usageRows');
     usage.innerHTML = '';
     [
@@ -344,6 +360,20 @@ document.getElementById('saveVoiceBtn').addEventListener('click', () => {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tts_voice: document.getElementById('voiceSelect').value }),
   }).then(() => { msg.textContent = 'Saved.'; })
+    .catch(() => { msg.textContent = "Couldn't save — try again."; });
+});
+document.getElementById('saveWebsitesBtn').addEventListener('click', () => {
+  const msg = document.getElementById('websitesMsg');
+  msg.textContent = 'Saving…';
+  fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      website_dreamerie: document.getElementById('webDreamerie').value.trim(),
+      website_suzy_d: document.getElementById('webSuzyD').value.trim(),
+      website_bear_arms: document.getElementById('webBearArms').value.trim(),
+      website_peptides: document.getElementById('webPeptides').value.trim(),
+    }),
+  }).then(r => r.json()).then(() => { msg.textContent = 'Saved.'; renderSettings(); })
     .catch(() => { msg.textContent = "Couldn't save — try again."; });
 });
 document.getElementById('saveSocialBtn').addEventListener('click', () => {
