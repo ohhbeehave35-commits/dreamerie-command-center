@@ -390,6 +390,10 @@ async def access_gate(request: Request, call_next):
         return await call_next(request)
     # Public, customer-facing paths (the website chat widget) are never gated.
     if (request.url.path in (
+            # /api/unlock MUST be here: it is the door in the gate. Gate it
+            # and the Unlock button 401s before routing, which is exactly how
+            # this deployment locked everyone out.
+            "/api/unlock",
             "/api/login", "/api/public-chat", "/api/brand", "/widget",
             "/privacy", "/terms", "/capabilities", "/auth/google-callback",
             "/auth/drive-callback", "/dropbox/callback",
@@ -432,9 +436,13 @@ async def access_gate(request: Request, call_next):
         username = users.verify_session_token(session_token)
         if username and users.user_exists_cached(username):
             return await call_next(request)
-    # Backward compatibility: if old ACCESS_CODE is still set and matches, allow it
-    # (for migration from old system). This is temporary and should be removed after migration.
-    if ACCESS_CODE and secrets.compare_digest(request.cookies.get("cc_access", ""), get_access_code()):
+    # Gate cookie. Guarded on get_access_code(), NOT the raw ACCESS_CODE env
+    # var: the code may have been set from the Settings panel
+    # (access_code_override) with the env var never set, and keying this on
+    # the env var meant a correct unlock still could not get past the gate.
+    # The truthiness check also stops an empty cookie matching an empty code.
+    _gate_code = get_access_code()
+    if _gate_code and secrets.compare_digest(request.cookies.get("cc_access", ""), _gate_code):
         return await call_next(request)
     # A direct/bookmarked/emailed link to an app PAGE (basic.html, index.html,
     # ...) must land on the sign-in form, not raw JSON -- a human just
@@ -558,6 +566,58 @@ def _client_ip(request: Request) -> str:
                 idx = 0  # header shorter than expected; fall back to leftmost
             return parts[idx]
     return request.client.host if request.client else "unknown"
+
+
+class UnlockRequest(BaseModel):
+    code: str
+
+
+@app.post("/api/unlock")
+def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
+    """Exchange the shared access code for the gate cookie.
+
+    Restored after it was dropped in the multi-company upgrade while the lock
+    screen that calls it stayed. Without this route the gate has no door: the
+    middleware answers /api/unlock with 401 before routing, so the Unlock
+    button reports "Incorrect code" no matter what is typed.
+
+    Per-IP rate limiting only -- deliberately NOT the global backstop used by
+    /api/login. A global counter on the gate would let anyone lock every user
+    out of the whole deployment by burning it from throwaway addresses, and
+    being unable to reach your own app is a worse outcome here than slowing a
+    guesser who already has to defeat a random code.
+    """
+    ip = _client_ip(request)
+    now = time.time()
+    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
+        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
+        return JSONResponse(
+            {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
+            status_code=429,
+        )
+
+    effective_code = get_access_code()
+    if not effective_code:
+        # No code configured anywhere. Say so rather than reporting a wrong
+        # code -- otherwise this looks identical to a typo and sends whoever is
+        # locked out hunting for a password that does not exist.
+        return JSONResponse(
+            {"ok": False, "detail": "No access code is configured for this deployment."},
+            status_code=503,
+        )
+
+    # compare_digest, not ==, so a wrong code cannot be narrowed down by timing.
+    if secrets.compare_digest(req.code or "", effective_code):
+        _unlock_attempts.pop(ip, None)
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie("cc_access", effective_code, max_age=60 * 60 * 24 * 30,
+                        httponly=True, samesite="lax", secure=True)
+        return resp
+
+    attempts.append(now)
+    _unlock_attempts[ip] = attempts
+    return JSONResponse({"ok": False, "detail": "Incorrect code"}, status_code=401)
 
 
 @app.post("/api/login")
