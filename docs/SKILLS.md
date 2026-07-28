@@ -80,6 +80,38 @@ own art fall back to the house logo. To add a brand: drop art at
 `static/mode-bg-<mode>.png` and add one line to `MODE_BG`. See
 `LOCKED-DECISIONS.md`.
 
+## 7. Every tool-dispatch branch must fail soft
+
+A single tool crashing must never 500 the whole chat. On 28 Jul the
+`run_diagnostic` branch called `diagnostic.run_all()`, which referenced an
+undefined `PROBES` (a list defined in the flagship but not ported here). The
+branch was unguarded, so the `NameError` escaped the handler as a bare
+`{"detail":"internal error"}` 500 — and asking "is everything working?" took
+Annabelle completely down. Every `elif block.name == …` branch that can raise
+must wrap its work in `try/except` and return an honest tool-result string
+(the drive-save branch is the model). The fix also defined `PROBES`; the guard
+is what makes any *future* probe bug survivable. See also §1 — a passing suite
+didn't catch this because nothing exercised the tool.
+
+## 8. Access-code auth IS an identity on this build
+
+Susan's deployment has no per-user login — the shared access code is the only
+credential. Endpoints that demanded a `cc_session` (`/api/me`, `/api/history`,
+and admin `/api/settings` saves) therefore refused her: history showed a false
+"session expired" banner and every settings Save silently no-op'd.
+`_identity_scope()` now maps a valid access cookie to the `access:` bucket, and
+`is_owner` is true for a valid access-code request. When adding a per-user
+endpoint here, decide what it does for an access-code request — do NOT assume a
+session exists.
+
+## 9. Business websites feed Annabelle
+
+Settings → Business Websites stores one URL per business as `website__<brand>`.
+`_website_context(mode)` injects the active business's site into the prompt so
+Annabelle shares the real URL and never invents one. It is brand-scoped: in a
+specific business mode she gets ONLY that business's site (never another's);
+combined mode lists all. Keep that isolation if you touch it.
+
 ---
 
 *When adding a lesson: keep it de-tenanted. If it requires naming another
