@@ -51,6 +51,8 @@
 <body>
   <h1>The Dreamerie Command Center</h1>
   <div class="sub">Your assistant — routes across The Dreamerie, Suzy D, Bear Arms and NS Peptides</div>
+  <!-- Live clock: date-sensitive work needs the real date on screen. -->
+  <div id="uiClock" class="sub" style="font-variant-numeric:tabular-nums"></div>
   <a class="fulllink" href="/?full=1">Full visual UI &#8599;</a>
 
   <!-- Business focus. The desktop UI has had this since the deployment became a
@@ -157,6 +159,67 @@
   </div>
 
 <script>
+// ---------- Remote-support beacon (same contract as index.html) ----------
+// Failures that never reach the server -- timeouts, cold-start hangs, offline
+// -- only exist in this browser. Report them so /support can show what the
+// phone actually experienced instead of relaying screenshots.
+function ccReport(kind, info) {
+  try {
+    fetch('/api/support/client-event', {
+      method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign(
+        { kind: kind, ua: (navigator.userAgent || '').slice(0, 150) }, info)),
+    }).catch(() => {});
+  } catch (e) { /* the beacon must never add its own error */ }
+}
+window.addEventListener('error', (e) => {
+  ccReport('client_error', { path: location.pathname,
+    detail: (e.message || 'script error') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?') });
+});
+window.addEventListener('unhandledrejection', (e) => {
+  ccReport('client_error', { path: location.pathname,
+    detail: 'unhandled rejection: ' + String(e.reason && e.reason.message || e.reason).slice(0, 300) });
+});
+(function() {
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    let path = '';
+    try {
+      const url = (typeof input === 'string') ? input : (input && input.url) || '';
+      path = new URL(url, location.href).pathname;
+    } catch (e) { path = String(input).slice(0, 100); }
+    if (path.indexOf('/api/support/') === 0) return _origFetch(input, init);
+    const method = (init && init.method) || (input && input.method) || 'GET';
+    const t0 = Date.now();
+    return _origFetch(input, init).then((res) => {
+      if (res.status >= 500) {
+        ccReport('client_error', { path: path, method: method, status: res.status,
+          detail: 'server answered ' + res.status + ' after ' + (Date.now() - t0) + 'ms' });
+      }
+      return res;
+    }, (err) => {
+      ccReport('client_network', { path: path, method: method,
+        detail: String(err && err.message || err).slice(0, 200) + ' after ' + (Date.now() - t0)
+          + 'ms — the request never completed (timeout, free-tier wake-up, or offline)' });
+      throw err;
+    });
+  };
+})();
+
+// ---------- Live clock ----------
+(function() {
+  function tickClock() {
+    const el = document.getElementById('uiClock');
+    if (!el) return;
+    const now = new Date();
+    el.textContent = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+      + ' · ' + now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  tickClock();
+  setInterval(tickClock, 15000);
+})();
+
 const log = document.getElementById('log');
 const form = document.getElementById('chat-form');
 const input = document.getElementById('input');

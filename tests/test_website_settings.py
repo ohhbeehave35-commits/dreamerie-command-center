@@ -34,7 +34,14 @@ def access_deployment(monkeypatch):
         return store.get(k, d)
 
     monkeypatch.setattr(m.crm, "get_setting", get_setting)
-    monkeypatch.setattr(m.crm, "set_setting", lambda k, v: store.update({k: v}))
+    # sync kwarg + truthy return match the real signature: admin saves now run
+    # synchronously and report failures, and a fake returning None would read
+    # as "every write failed".
+    def set_setting(k, v, sync=False):
+        store[k] = v
+        return True
+
+    monkeypatch.setattr(m.crm, "set_setting", set_setting)
     # get_user must not accidentally return an owner; access-code users have none.
     monkeypatch.setattr(users, "get_user", lambda u: None)
     monkeypatch.setattr(m, "_get_session_username", lambda request: None)

@@ -159,10 +159,13 @@
     </div></div>
     <div class="navGroup"><button type="button">Account</button><div class="navMenu">
       <a href="#" id="navSettings" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Settings</a>
+      <a href="/support" style="color:#9aa0aa;text-decoration:none;font-size:13px">Support</a>
       <a href="/static/basic.html" style="color:#9aa0aa;text-decoration:none;font-size:13px">Basic UI</a>
       <a href="#" id="logoutBtn" style="color:#9aa0aa;text-decoration:none;font-size:13px;cursor:pointer">Logout</a>
     </div></div>
     <div style="display:flex;gap:18px;align-items:center;margin-left:8px;padding-left:16px;border-left:1px solid rgba(200,204,210,0.14)">
+      <!-- Live clock: tasks are dated against real time, so the real time is on screen. -->
+      <div style="text-align:center;min-width:86px"><div style="font-size:16px;font-weight:700;line-height:1;color:var(--brand-light,#e6cf88);font-variant-numeric:tabular-nums" id="uiClock">—:—</div><div style="font-size:8.5px;letter-spacing:0.1em;text-transform:uppercase;color:#7d7c74" id="uiDate">today</div></div>
       <div style="text-align:center"><div style="font-size:16px;font-weight:700;line-height:1;color:var(--brand-light,#e6cf88)">4</div><div style="font-size:8.5px;letter-spacing:0.1em;text-transform:uppercase;color:#7d7c74">Agents</div></div>
       <div style="text-align:center"><div style="font-size:16px;font-weight:700;line-height:1;color:#c8ccd2" id="reqCount">0</div><div style="font-size:8.5px;letter-spacing:0.1em;text-transform:uppercase;color:#7d7c74">Requests</div></div>
       <div style="text-align:center"><div style="font-size:16px;font-weight:700;line-height:1;color:var(--brand-light,#e6cf88)" id="apiState">&mdash;</div><div id="apiStateLabel" style="font-size:8.5px;letter-spacing:0.1em;text-transform:uppercase;color:#7d7c74">the assistant</div></div>
@@ -214,6 +217,20 @@
       <button class="modeBtn" data-mode="bear_arms" style="font-family:Inter,sans-serif;font-size:12.5px;font-weight:500;letter-spacing:0.05em;padding:8px 14px;border:none;border-radius:8px;cursor:pointer;background:none;color:#9aa0aa;transition:background 0.15s,color 0.15s;text-align:left">Bear Arms</button>
       <button class="modeBtn" data-mode="peptides" style="font-family:Inter,sans-serif;font-size:12.5px;font-weight:500;letter-spacing:0.05em;padding:8px 14px;border:none;border-radius:8px;cursor:pointer;background:none;color:#9aa0aa;transition:background 0.15s,color 0.15s;text-align:left">NS Peptides</button>
       <button class="modeBtn" data-mode="combined" style="font-family:Inter,sans-serif;font-size:12.5px;font-weight:500;letter-spacing:0.05em;padding:8px 14px;border:none;border-radius:8px;cursor:pointer;background:none;color:#9aa0aa;transition:background 0.15s,color 0.15s;text-align:left">Combined</button>
+    </div>
+    <!-- Per-business website slot: follows the active mode, so each command
+         center tab carries its own site. Saves to the same website__<brand>
+         keys as the Settings card — one source of truth, two doors. -->
+    <div id="modeSiteCard" style="display:none;flex-direction:column;gap:6px;background:rgba(12,11,9,0.95);border:1px solid rgba(200,204,210,0.16);border-radius:10px;padding:10px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span id="modeSiteLabel" style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#b99a44">Website</span>
+        <a id="modeSiteOpen" href="#" target="_blank" rel="noopener" style="display:none;font-size:10px;color:#8fb0c4;text-decoration:none">Open ↗</a>
+      </div>
+      <input id="modeSiteInput" type="url" placeholder="https://…" style="width:100%;padding:7px 9px;font-size:12px;color:#e6e2d6;background:rgba(20,19,16,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:6px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <button id="modeSiteSave" style="padding:5px 12px;font-weight:600;font-size:11px;background:rgba(var(--brand-rgb),0.25);color:var(--brand,#d4af37);border:1px solid rgba(var(--brand-rgb),0.4);border-radius:6px;cursor:pointer">Save</button>
+        <span id="modeSiteMsg" style="font-size:10.5px;color:#8fb08f"></span>
+      </div>
     </div>
   </div>
 
@@ -877,6 +894,70 @@
 
 <script>
 (function() {
+  // ---------- Remote-support beacon ----------
+  // The server can only log requests that REACH it. "Trouble reaching server"
+  // is precisely a request that didn't, so the only place that failure exists
+  // is this browser -- report it, and script errors, to /api/support so
+  // support can see what Susan sees without her relaying screenshots.
+  function ccReport(kind, info) {
+    try {
+      fetch('/api/support/client-event', {
+        method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign(
+          { kind: kind, ua: (navigator.userAgent || '').slice(0, 150) }, info)),
+      }).catch(() => {});
+    } catch (e) { /* the beacon must never add its own error */ }
+  }
+  window.ccReport = ccReport;
+  window.addEventListener('error', (e) => {
+    ccReport('client_error', { path: location.pathname,
+      detail: (e.message || 'script error') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?') });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    ccReport('client_error', { path: location.pathname,
+      detail: 'unhandled rejection: ' + String(e.reason && e.reason.message || e.reason).slice(0, 300) });
+  });
+  // Wrap fetch so every failed or 5xx call reports itself, with how long it
+  // hung first -- a 25s hang then failure is the free-tier cold start,
+  // and seeing that number is what separates "server down" from "server waking".
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    let path = '';
+    try {
+      const url = (typeof input === 'string') ? input : (input && input.url) || '';
+      path = new URL(url, location.href).pathname;
+    } catch (e) { path = String(input).slice(0, 100); }
+    if (path.indexOf('/api/support/') === 0) return _origFetch(input, init);
+    const method = (init && init.method) || (input && input.method) || 'GET';
+    const t0 = Date.now();
+    return _origFetch(input, init).then((res) => {
+      if (res.status >= 500) {
+        ccReport('client_error', { path: path, method: method, status: res.status,
+          detail: 'server answered ' + res.status + ' after ' + (Date.now() - t0) + 'ms' });
+      }
+      return res;
+    }, (err) => {
+      ccReport('client_network', { path: path, method: method,
+        detail: String(err && err.message || err).slice(0, 200) + ' after ' + (Date.now() - t0)
+          + 'ms — the request never completed (timeout, free-tier wake-up, or offline)' });
+      throw err;
+    });
+  };
+
+  // ---------- Live clock ----------
+  // Real time on screen so date-sensitive work is anchored to the real date.
+  // The assistant gets the same clock server-side, injected into every turn.
+  function tickClock() {
+    const c = document.getElementById('uiClock'), d = document.getElementById('uiDate');
+    if (!c || !d) return;
+    const now = new Date();
+    c.textContent = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    d.textContent = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  tickClock();
+  setInterval(tickClock, 15000);
+
   // Network nodes: the SAFE draft-mode roster from the Neural Command design.
   const agents = [
     { n: 'Discovery Intake', col: '#d8dde3' }, { n: 'Case Orchestrator', col: '#5b9bd5' },
@@ -2121,14 +2202,59 @@
     });
     applyModeBackground();
   }
+  // ---------- Per-mode website slot ----------
+  // Each business tab carries its own site. Same website__<brand> settings keys
+  // as the Settings card; this is just the second door to them.
+  const MODE_LABELS = { dreamerie: 'The Dreamerie', suzy_d: 'Suzy D', bear_arms: 'Bear Arms', peptides: 'NS Peptides' };
+  let modeSites = {};
+  function updateModeSite() {
+    const card = document.getElementById('modeSiteCard');
+    if (!card) return;
+    if (!MODE_LABELS[currentMode]) { card.style.display = 'none'; return; } // combined = no single site
+    card.style.display = 'flex';
+    document.getElementById('modeSiteLabel').textContent = MODE_LABELS[currentMode] + ' website';
+    const url = modeSites['website_' + currentMode] || '';
+    document.getElementById('modeSiteInput').value = url;
+    const open = document.getElementById('modeSiteOpen');
+    open.style.display = url ? 'inline' : 'none';
+    if (url) open.href = url;
+    document.getElementById('modeSiteMsg').textContent = '';
+  }
+  function loadModeSites() {
+    fetch('/api/settings').then(r => r.json()).then(d => {
+      Object.keys(MODE_LABELS).forEach(k => { modeSites['website_' + k] = d['website_' + k] || ''; });
+      updateModeSite();
+    }).catch(() => {});
+  }
+  document.getElementById('modeSiteSave').addEventListener('click', () => {
+    const msg = document.getElementById('modeSiteMsg');
+    const val = document.getElementById('modeSiteInput').value.trim();
+    if (!MODE_LABELS[currentMode]) return;
+    if (!val) { msg.textContent = 'Enter the site URL first.'; return; }
+    msg.textContent = 'Saving…';
+    const body = {}; body['website_' + currentMode] = val;
+    fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json()).then(d => {
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
+      modeSites['website_' + currentMode] = val;
+      updateModeSite();  // clears the message, so set it after
+      msg.textContent = 'Saved.';
+    }).catch(() => { msg.textContent = "Couldn't save — try again."; });
+  });
+
   document.querySelectorAll('.modeBtn').forEach(btn => {
     btn.addEventListener('click', () => {
       currentMode = btn.dataset.mode;
       localStorage.setItem('cc_mode', currentMode);
       applyModeStyles();
+      updateModeSite();
     });
   });
   applyModeStyles();
+  updateModeSite();
+  loadModeSites();
 
   // ---------- Demo mode UI ----------
   if (demoSlug) {
@@ -2872,6 +2998,7 @@
       }),
     }).then(r => r.json()).then(d => {
       document.getElementById('gmailAppPassword').value = '';
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
       msg.textContent = d.gmail_connected ? 'Saved — connected!' : 'Saved.';
       renderSettings();
     }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
@@ -2901,8 +3028,10 @@
         website_bear_arms: document.getElementById('webBearArms').value.trim(),
         website_peptides: document.getElementById('webPeptides').value.trim(),
       }),
-    }).then(r => r.json()).then(() => { msg.textContent = 'Saved.'; renderSettings(); })
-      .catch(() => { msg.textContent = "Couldn't save — try again."; });
+    }).then(r => r.json()).then(d => {
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
+      msg.textContent = 'Saved.'; renderSettings();
+    }).catch(() => { msg.textContent = "Couldn't save — try again."; });
   });
 
   document.getElementById('saveSocialBtn').addEventListener('click', () => {
@@ -2919,6 +3048,9 @@
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(r => r.json()).then(d => {
+      // A 502 here means Airtable refused the write. Saying "Saved." anyway is
+      // how the webhook URLs kept silently reverting.
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
       msg.textContent = d.social_connected ? 'Saved — connected!' : 'Saved.';
       renderSettings();
     }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
@@ -2935,6 +3067,7 @@
       body: JSON.stringify({ elevenlabs_api_key: key, elevenlabs_voice_id: voice }),
     }).then(r => r.json()).then(d => {
       document.getElementById('elevenApiKey').value = '';
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
       msg.textContent = d.elevenlabs_connected ? 'Saved — connected!' : 'Saved.';
       renderSettings();
     }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
@@ -2950,8 +3083,10 @@
         public_chat_cap: document.getElementById('publicCapInput').value,
         owner_chat_cap: document.getElementById('ownerCapInput').value,
       }),
-    }).then(r => r.json()).then(() => { msg.textContent = 'Saved.'; renderSettings(); })
-      .catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
+    }).then(r => r.json()).then(d => {
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
+      msg.textContent = 'Saved.'; renderSettings();
+    }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
   });
 
   document.getElementById('saveAccessCodeBtn').addEventListener('click', () => {
@@ -3008,6 +3143,9 @@
   function renderUsers() {
     fetch('/api/me').then(r => r.json()).then(me => {
       if (me.username) document.getElementById('currentUser').textContent = me.username + ' (' + me.role + ')';
+      // Access-code deployment: no per-user account, but whoever holds the
+      // code IS the owner -- show that instead of a dash that reads as broken.
+      else if (me.access_mode) document.getElementById('currentUser').textContent = 'Access code (owner)';
     }).catch(() => {});
     fetch('/api/users').then(r => r.json()).then(d => {
       const list = document.getElementById('usersList');

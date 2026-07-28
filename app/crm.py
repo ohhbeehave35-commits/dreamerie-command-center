@@ -910,18 +910,31 @@ def get_setting(key: str, default: str = "") -> str:
         return default
 
 
-def set_setting(key: str, value: str) -> None:
+def set_setting(key: str, value: str, sync: bool = False) -> bool:
     """Write one Key/Value setting (creates or updates). Updates the snapshot
-    cache immediately and persists to Airtable in background (fire-and-forget)
-    so response latency isn't blocked by network calls."""
+    cache immediately; persists to Airtable in background by default so chat
+    latency isn't blocked by network calls.
+
+    sync=True runs the Airtable write inline and returns whether it actually
+    landed. Admin "Save" buttons must use this: the background path shows the
+    new value from cache for TTL seconds even when the write failed, so the UI
+    says "Saved.", the user walks away, and 30s later the old value is back.
+    That is exactly how Susan's Zapier webhook URLs kept "not saving" with no
+    error anywhere.
+
+    Return value: True when the write landed (or, on the async path, was
+    handed to the background writer); False when it is KNOWN to have failed.
+    Failures are also recorded on the /support page either way -- a write that
+    fails only in a daemon thread used to be a write that failed in private.
+    """
     if not is_configured():
-        return
+        return False
     # Update cache immediately so this instance reads its own write without TTL wait.
     global _settings_cache, _settings_cache_at
     if _settings_cache_at:
         _settings_cache[key] = str(value)
-    # Persist to Airtable in background so response returns immediately.
-    def _persist_setting():
+
+    def _persist_setting() -> bool:
         try:
             tid = _ensure_settings_table()
             with httpx.Client(timeout=30) as c:
@@ -930,15 +943,35 @@ def set_setting(key: str, value: str) -> None:
                 r.raise_for_status()
                 recs = r.json().get("records", [])
                 if recs:
-                    c.patch(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}/{recs[0]['id']}",
-                            headers=_headers(), json={"fields": {"Value": str(value)}, "typecast": True})
+                    w = c.patch(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}/{recs[0]['id']}",
+                                headers=_headers(), json={"fields": {"Value": str(value)}, "typecast": True})
                 else:
-                    c.post(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
-                           json={"fields": {"Key": key, "Value": str(value)}, "typecast": True})
-        except Exception:
-            pass
+                    w = c.post(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
+                               json={"fields": {"Key": key, "Value": str(value)}, "typecast": True})
+                # The old code never looked at the write's status, so a 403
+                # (PAT missing write scope) or 422 was a *silent success*.
+                w.raise_for_status()
+            return True
+        except Exception as e:
+            log.error("SETTING_WRITE_FAIL key=%s: %s", key, e)
+            try:
+                from . import support
+                support.record_note("setting_write_failed",
+                                    f"'{key}' did not persist to Airtable: "
+                                    f"{type(e).__name__}: {e}")
+            except Exception:
+                pass
+            # Drop the optimistic cache entry so reads stop claiming a value
+            # Airtable doesn't hold; the next snapshot refresh restores truth.
+            if _settings_cache_at:
+                _settings_cache.pop(key, None)
+            return False
+
+    if sync:
+        return _persist_setting()
     import threading
     threading.Thread(target=_persist_setting, daemon=True).start()
+    return True
 
 
 def get_user_setting(username: str, key: str, default: str = "") -> str:

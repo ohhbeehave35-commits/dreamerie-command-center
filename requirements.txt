@@ -14,3 +14,4 @@ bcrypt==4.0.1
 markdown
 bleach
 pywebpush
+tzdata  # zoneinfo data for the Eastern-time clock injected into every prompt

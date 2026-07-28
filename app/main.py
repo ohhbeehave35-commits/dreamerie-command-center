@@ -56,6 +56,7 @@ from . import push
 from . import webfetch
 from . import seo_audit
 from . import config_check
+from . import support
 from .agents import (
     MAIN_BRAIN_SYSTEM_PROMPT,
     build_main_brain_prompt,
@@ -403,6 +404,13 @@ async def access_gate(request: Request, call_next):
             "/api/proposals/sign",  # proposal viewer accessed by clients, not owners
             "/proposal",  # client-facing proposal viewer
             "/healthz",  # uptime monitor probe -- must never require auth
+            # The browser's error beacon. Ungated ON PURPOSE: the failure we
+            # most needed to see -- "I can't get in" -- happens on a page that
+            # by definition has no valid cookie, so a gated beacon would be
+            # silent for exactly the incident it exists to report. It accepts
+            # no data that can be read back without the gate, is rate-limited
+            # per IP, and everything it stores is scrubbed and length-capped.
+            "/api/support/client-event",
             "/run/calendar-reminder",  # GitHub Actions cron trigger -- protected by its own secret, not a session
                                                 # Crawlers fetch these before anything else. Behind the gate they
             # returned 401, so the site had no sitemap and no robots policy.
@@ -512,6 +520,11 @@ async def request_logger(request: Request, call_next):
             "REQ_FAIL %s %s -> 500 in %dms\n%s",
             method, path, dur_ms, traceback.format_exc(),
         )
+        # Also keep it where someone can actually SEE it. The Render log stream
+        # is only readable by whoever is logged into Render and watching at the
+        # time; this puts the same failure on the support page.
+        support.record_request(method, path, 500, dur_ms,
+                               error=f"{type(exc).__name__}: {exc}")
         # An out-of-credit or bad-key Anthropic account is not an "internal
         # error" -- it is a two-minute fix, and reporting it as a generic 500
         # sends you hunting for a server problem that doesn't exist. Ask the
@@ -524,6 +537,10 @@ async def request_logger(request: Request, call_next):
     if response.status_code >= 500 or (not is_noisy) or dur_ms > 2000:
         level = logging.WARNING if response.status_code >= 400 else logging.INFO
         log.log(level, "REQ %s %s -> %d in %dms", method, path, response.status_code, dur_ms)
+    # record_request keeps only failures and unusually slow calls; a successful
+    # fast request is dropped on the floor there, not filtered here, so the rule
+    # lives in one place.
+    support.record_request(method, path, response.status_code, dur_ms)
     return response
 
 
@@ -618,6 +635,13 @@ def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
 
     attempts.append(now)
     _unlock_attempts[ip] = attempts
+    # A run of these on the support page is the difference between "the app is
+    # down" and "the code being typed is wrong" -- the exact ambiguity that cost
+    # an afternoon. The code itself is never recorded, only that one was refused.
+    support.record_note("unlock_failed",
+                        f"Access code refused ({len(attempts)} of "
+                        f"{UNLOCK_MAX_ATTEMPTS} attempts in the window)",
+                        path="/api/unlock")
     return JSONResponse({"ok": False, "detail": "Incorrect code"}, status_code=401)
 
 
@@ -2138,11 +2162,36 @@ def _website_context(mode: str) -> str:
     return "\n\nBusiness websites (use the exact URL, never invent one): " + listed + "."
 
 
+def _now_context() -> str:
+    """Current date & time, injected fresh into EVERY turn's system prompt.
+
+    Without this the model has no clock at all: it dated follow-ups from its
+    training data and agreed with whatever "today" the user implied. Anything
+    time-sensitive -- deadlines, events, "post this tomorrow" -- needs the model
+    to know when NOW is. Eastern because Susan (Queens) and Vinny both live
+    there; falls back to UTC (labelled, never silently) if tzdata is missing.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+        tz_label = "Eastern"
+    except Exception:
+        now = datetime.now(timezone.utc)
+        tz_label = "UTC"
+    stamp = now.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
+    return ("\n\nCURRENT DATE & TIME: " + stamp + " " + tz_label + ". "
+            "This is authoritative -- trust it over your training data and over "
+            "dates mentioned earlier in the conversation. Anchor every deadline, "
+            "schedule, 'today'/'tomorrow'/'this week', and follow-up you state to "
+            "it, and when a task is date-sensitive, say the date you're working "
+            "from so it can be corrected if the intent was different.")
+
+
 def _owner_chat_setup(req: ChatRequest):
     """System prompt + tool set for an owner turn, derived from the active mode.
     Shared by /api/chat and /api/chat/stream so the two can never drift."""
     update_note = (_get_update_injection() + _get_learning_injection()) if not req.history else ""
-    sys_prompt = build_main_brain_prompt(_current_agent_name()) + get_automation_level_prompt(get_automation_level()) + update_note
+    sys_prompt = build_main_brain_prompt(_current_agent_name()) + get_automation_level_prompt(get_automation_level()) + update_note + _now_context()
     tools = config_check.filter_tools(DELEGATION_TOOLS)
     if req.mode in MODE_TOOLS:
         tools = [t for t in tools if t["name"] in MODE_TOOLS[req.mode]]
@@ -2785,47 +2834,58 @@ def save_settings(req: SettingsUpdate, request: Request) -> JSONResponse:
     # so this grants nothing there.
     is_owner = ((user or {}).get("role") == "owner") or _access_authenticated(request)
 
-    # Admin-only settings — only owners may change these
+    # Admin-only settings — only owners may change these.
+    # Saved SYNCHRONOUSLY (sync=True) and failures collected: these are the
+    # "click Save, walk away" settings, where the background writer's cheerful
+    # "Saved." over a write that never landed is how the Zapier webhooks kept
+    # reverting. A Save button can afford one Airtable round-trip; a false
+    # success costs an afternoon.
+    failed: List[str] = []
+
+    def _save(key: str, value: str, label: str) -> None:
+        if not crm.set_setting(key, value, sync=True):
+            failed.append(label)
+
     if is_owner:
         if req.gmail_address.strip():
-            crm.set_setting(emailer.GMAIL_ADDRESS_KEY, req.gmail_address.strip())
+            _save(emailer.GMAIL_ADDRESS_KEY, req.gmail_address.strip(), "Gmail address")
         if req.gmail_app_password.strip():
-            crm.set_setting(emailer.GMAIL_APP_PASSWORD_KEY, req.gmail_app_password.strip())
-        for key, field in (
-            ("cap_search_monthly", req.search_cap),
-            ("cap_chat_public", req.public_chat_cap),
-            ("cap_chat_owner", req.owner_chat_cap),
+            _save(emailer.GMAIL_APP_PASSWORD_KEY, req.gmail_app_password.strip(), "Gmail app password")
+        for key, field, label in (
+            ("cap_search_monthly", req.search_cap, "search cap"),
+            ("cap_chat_public", req.public_chat_cap, "public chat cap"),
+            ("cap_chat_owner", req.owner_chat_cap, "owner chat cap"),
         ):
             if field.strip():
                 try:
-                    crm.set_setting(key, str(int(field.strip())))
+                    _save(key, str(int(field.strip())), label)
                 except ValueError:
                     pass
         if req.access_code.strip():
-            crm.set_setting("access_code_override", req.access_code.strip())
+            _save("access_code_override", req.access_code.strip(), "access code")
         if req.zapier_webhook_url.strip():
-            crm.set_setting(social.WEBHOOK_KEY, req.zapier_webhook_url.strip())
+            _save(social.WEBHOOK_KEY, req.zapier_webhook_url.strip(), "default webhook")
         for plat in ("facebook", "instagram", "youtube", "tiktok", "x"):
             val = getattr(req, f"zapier_webhook_url_{plat}", "").strip()
             if val:
-                crm.set_setting(f"{social.WEBHOOK_KEY}_{plat}", val)
+                _save(f"{social.WEBHOOK_KEY}_{plat}", val, f"{plat} webhook")
         if req.elevenlabs_api_key.strip():
-            crm.set_setting(voice_eleven.API_KEY_SETTING, req.elevenlabs_api_key.strip())
+            _save(voice_eleven.API_KEY_SETTING, req.elevenlabs_api_key.strip(), "ElevenLabs key")
         if req.elevenlabs_voice_id.strip():
             vid = voice_eleven.DEFAULT_VOICES.get(req.elevenlabs_voice_id.strip(), req.elevenlabs_voice_id.strip())
-            crm.set_setting(voice_eleven.VOICE_ID_SETTING, vid)
+            _save(voice_eleven.VOICE_ID_SETTING, vid, "ElevenLabs voice")
         if req.openai_api_key.strip():
-            crm.set_setting(OPENAI_API_KEY_SETTING, req.openai_api_key.strip())
+            _save(OPENAI_API_KEY_SETTING, req.openai_api_key.strip(), "OpenAI key")
         if req.xai_api_key.strip():
-            crm.set_setting("xai_api_key", req.xai_api_key.strip())
+            _save("xai_api_key", req.xai_api_key.strip(), "xAI key")
         if req.media_image_provider.strip() in ("chatgpt", "grok"):
-            crm.set_setting("media_image_provider", req.media_image_provider.strip())
+            _save("media_image_provider", req.media_image_provider.strip(), "image provider")
         if req.media_video_provider.strip() in ("grok",):
-            crm.set_setting("media_video_provider", req.media_video_provider.strip())
+            _save("media_video_provider", req.media_video_provider.strip(), "video provider")
         for b in brand_identity.BRANDS:
             raw = getattr(req, f"website_{b}", "")
             if raw.strip():
-                crm.set_setting(f"website__{b}", _normalize_url(raw))
+                _save(f"website__{b}", _normalize_url(raw), f"{b} website")
 
     # Per-user settings (voice, model, automation) -- any logged-in user saves
     # these to their own account; owners save globally so new users inherit them.
@@ -2844,6 +2904,17 @@ def save_settings(req: SettingsUpdate, request: Request) -> JSONResponse:
             crm.set_setting("chat_model_default", req.chat_model_default.strip())
         elif username:
             crm.set_user_setting(username, "chat_model_default", req.chat_model_default.strip())
+    if failed:
+        # 502: the request was fine, the datastore write was not. Naming the
+        # fields that failed is the difference between "not saving to Zap,
+        # no idea why" and a fixable report.
+        return JSONResponse({
+            "ok": False,
+            "detail": ("These didn't save (Airtable rejected the write): "
+                       + ", ".join(failed)
+                       + ". Check the /support page for the exact error."),
+            "failed": failed,
+        }, status_code=502)
     return JSONResponse({
         "ok": True,
         "gmail_connected": emailer.is_configured(),
@@ -2887,10 +2958,23 @@ def _get_session_role(request: Request) -> Optional[str]:
     return user.get("role") if user else None
 
 
+def _is_owner_request(request: Request) -> bool:
+    """Owner check that works on BOTH auth systems.
+
+    Same principle as the /api/settings fix (28 Jul): on an access-code
+    deployment whoever holds the code IS the owner. Every user-management
+    endpoint gated on the session role alone silently 403'd for Susan, which is
+    why her Settings showed an "Invite a team member" form that could never
+    add anyone -- she needs it to create Nick's login. Multi-user deployments
+    never set cc_access, so this grants nothing there.
+    """
+    return _get_session_role(request) == "owner" or _access_authenticated(request)
+
+
 @app.get("/api/users")
 def get_users(request: Request) -> JSONResponse:
     """Owner-only. List all users."""
-    if _get_session_role(request) != "owner":
+    if not _is_owner_request(request):
         return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
     user_list = users.list_users()
     return JSONResponse({"ok": True, "users": user_list})
@@ -2899,7 +2983,7 @@ def get_users(request: Request) -> JSONResponse:
 @app.post("/api/users")
 def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
     """Owner-only. Create a new user account."""
-    if _get_session_role(request) != "owner":
+    if not _is_owner_request(request):
         return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
     if not req.username or not req.email or not req.password:
         return JSONResponse({"ok": False, "detail": "Missing required fields"}, status_code=400)
@@ -2925,7 +3009,7 @@ def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
 @app.delete("/api/users/{username}")
 def delete_user(username: str, request: Request) -> JSONResponse:
     """Owner-only. Delete a user account."""
-    if _get_session_role(request) != "owner":
+    if not _is_owner_request(request):
         return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
     if users.delete_user(username):
         return JSONResponse({"ok": True, "detail": "User deleted"})
@@ -2946,7 +3030,7 @@ def admin_reset_password(username: str, request: Request) -> JSONResponse:
     body, so the plaintext exists in exactly one response and is never stored or
     logged. Hand it to the user out-of-band; they change it from Settings.
     """
-    if _get_session_role(request) != "owner":
+    if not _is_owner_request(request):
         return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
 
     user = users.get_user(username)
@@ -3309,7 +3393,9 @@ def public_chat(req: ChatRequest, request: Request) -> ChatResponse:
     _public_chat_times[ip] = times
     req.clean()
     try:
-        return run_main_brain(req.message, req.history, build_public_prompt(_current_agent_name()), PUBLIC_TOOLS,
+        return run_main_brain(req.message, req.history,
+                              build_public_prompt(_current_agent_name()) + _now_context(),
+                              PUBLIC_TOOLS,
                                persona="public", request_id=req.request_id)
     finally:
         _clear_cancelled(req.request_id)
@@ -3377,6 +3463,61 @@ def api_diagnostic() -> JSONResponse:
 def diagnostic_page() -> FileResponse:
     """Owner-only. Human-readable status board for every integration."""
     return FileResponse("static/diagnostic.html")
+
+
+# ── Remote support ───────────────────────────────────────────────────────────
+# /diagnostic answers "are the integrations wired up". These answer the
+# different question that actually cost a day: "what has this app been doing,
+# and did it just restart underneath her". Both are behind the same gate.
+
+@app.get("/api/support/report")
+def api_support_report(limit: int = 200) -> JSONResponse:
+    """Owner-only. Recent faults, uptime, and the serving revision.
+
+    No network calls -- it has to answer when the network is the problem.
+    Contains no request bodies, no query strings and no chat content by
+    construction; see app/support.py.
+    """
+    return JSONResponse(support.report(limit=max(1, min(limit, support.MAX_EVENTS))))
+
+
+class ClientEvent(BaseModel):
+    """What a browser is allowed to tell us. Everything else it sends is
+    ignored -- the beacon is ungated, so this model is the whole trust
+    boundary. Lengths are re-capped again in support._scrub()."""
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "client_error"
+    path: str = ""
+    method: str = ""
+    status: Optional[int] = None
+    detail: str = ""
+    ua: str = ""
+
+
+@app.post("/api/support/client-event")
+def api_support_client_event(ev: ClientEvent, request: Request) -> JSONResponse:
+    """Ungated. The browser reporting something that broke on HER side.
+
+    A request that times out or never resolves produces no server log line at
+    all -- that is precisely what "trouble reaching server" is. Without this
+    endpoint that whole class of failure is invisible to everyone except the
+    person staring at the spinner.
+    """
+    accepted = support.record_client_event(
+        ev.model_dump(), ip=_client_ip(request),
+        authenticated=_identity_scope(request) is not None,
+    )
+    # 202 either way: the beacon must never make a broken page look more broken,
+    # and telling an unauthenticated caller whether it was throttled tells them
+    # nothing useful and gives a prober a signal.
+    return JSONResponse({"ok": accepted}, status_code=202)
+
+
+@app.get("/support", response_class=HTMLResponse)
+def support_page() -> FileResponse:
+    """Owner-only. The read-only remote-support view."""
+    return FileResponse("static/support.html")
 
 
 @app.get("/api/features")
