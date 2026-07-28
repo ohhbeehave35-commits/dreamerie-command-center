@@ -2050,6 +2050,25 @@
 
   // ---------- Mode Switcher ----------
   let currentMode = localStorage.getItem('cc_mode') || 'combined';
+
+  // Each business shows its OWN brand as the faint dashboard background when you
+  // switch to it, so the workspace visibly becomes that company. Modes without
+  // their own art fall back to the house logo. Add a file here as art arrives.
+  const MODE_BG = {
+    bear_arms: '/static/mode-bg-bear_arms.png',
+    peptides:  '/static/mode-bg-peptides.png',
+  };
+  const DEFAULT_BG = '/static/logo.webp';
+  function applyModeBackground() {
+    const wm = document.getElementById('logoWatermark');
+    if (!wm) return;
+    const src = MODE_BG[currentMode] || DEFAULT_BG;
+    if (!wm.src.endsWith(src)) wm.src = src;
+    // A branded mode gets a touch more presence so the switch is felt; the
+    // house/combined view stays at the original whisper-faint level.
+    wm.parentElement.style.opacity = MODE_BG[currentMode] ? '0.10' : '0.06';
+  }
+
   function applyModeStyles() {
     document.querySelectorAll('.modeBtn').forEach(btn => {
       const active = btn.dataset.mode === currentMode;
@@ -2057,6 +2076,7 @@
       btn.style.color = active ? '#1a1508' : '#9aa0aa';
       btn.style.fontWeight = active ? '600' : '500';
     });
+    applyModeBackground();
   }
   document.querySelectorAll('.modeBtn').forEach(btn => {
     btn.addEventListener('click', () => {
