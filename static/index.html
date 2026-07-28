@@ -2982,11 +2982,35 @@
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(20,19,16,0.5);border-radius:8px;font-size:12px';
         row.innerHTML = '<span><span style="color:var(--brand, #d4af37);font-weight:600">' + u.username + '</span> <span style="color:#7d7c74">(' + u.role + ')</span></span>' +
-          '<button class="deleteUserBtn" data-user="' + u.username + '" style="padding:4px 8px;font-size:11px;background:rgba(196,122,99,0.25);color:#c47a63;border:1px solid rgba(196,122,99,0.4);border-radius:4px;cursor:pointer">Delete</button>';
+          '<span style="display:flex;gap:6px">' +
+          // Reset sits BEFORE Delete deliberately. Delete used to be the only
+          // way to deal with a locked-out user, and it silently detaches their
+          // chats and settings (both keyed by username). The safe action should
+          // be the one that falls under the cursor first.
+          '<button class="resetPwBtn" data-user="' + u.username + '" style="padding:4px 8px;font-size:11px;background:rgba(var(--brand-rgb),0.2);color:var(--brand-light,#e6cf88);border:1px solid rgba(var(--brand-rgb),0.4);border-radius:4px;cursor:pointer">Reset password</button>' +
+          '<button class="deleteUserBtn" data-user="' + u.username + '" style="padding:4px 8px;font-size:11px;background:rgba(196,122,99,0.25);color:#c47a63;border:1px solid rgba(196,122,99,0.4);border-radius:4px;cursor:pointer">Delete</button>' +
+          '</span>';
         list.appendChild(row);
       });
+      document.querySelectorAll('.resetPwBtn').forEach(btn => btn.addEventListener('click', () => {
+        const who = btn.dataset.user;
+        if (!confirm('Issue a new temporary password for ' + who + '?\n\nTheir current password stops working immediately.')) return;
+        btn.disabled = true; btn.textContent = 'Working…';
+        fetch('/api/users/' + encodeURIComponent(who) + '/reset-password', {method: 'POST'})
+          .then(r => r.json())
+          .then(d => {
+            if (!d.ok) { alert(d.detail || 'Could not reset that password.'); return; }
+            // Shown once and never stored in readable form, so it must not be
+            // buried in a toast that can be missed or auto-dismissed.
+            window.prompt(
+              'Temporary password for ' + d.username + ' — copy it now, it is shown once.\n\n'
+              + d.detail, d.temporary_password);
+          })
+          .catch(e => alert('Error: ' + e.message))
+          .finally(() => { btn.disabled = false; btn.textContent = 'Reset password'; });
+      }));
       document.querySelectorAll('.deleteUserBtn').forEach(btn => btn.addEventListener('click', () => {
-        if (!confirm('Delete user ' + btn.dataset.user + '?')) return;
+        if (!confirm('Delete user ' + btn.dataset.user + '?\n\nThis also detaches their chat history and settings. If they are just locked out, use "Reset password" instead.')) return;
         fetch('/api/users/' + btn.dataset.user, {method:'DELETE'}).then(() => { renderUsers(); }).catch(e => alert('Error: ' + e.message));
       }));
     }).catch(() => {});

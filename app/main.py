@@ -34,6 +34,7 @@ from openai import OpenAI
 
 from . import crm
 from . import events
+from . import password_reset
 from . import toolbox
 from . import emailer
 from . import calendar as gcal
@@ -2734,6 +2735,60 @@ def delete_user(username: str, request: Request) -> JSONResponse:
     if users.delete_user(username):
         return JSONResponse({"ok": True, "detail": "User deleted"})
     return JSONResponse({"ok": False, "detail": "User not found"}, status_code=400)
+
+
+@app.post("/api/users/{username}/reset-password")
+def admin_reset_password(username: str, request: Request) -> JSONResponse:
+    """Owner-only. Issue a new temporary password for a locked-out user.
+
+    This existed nowhere before: /api/change-password needs the CURRENT password,
+    and the only owner controls were create and delete. Deleting and recreating
+    was the sole workaround, and it silently detaches the user's history --
+    chats and per-user settings are keyed by username, so the recreated account
+    only looks like the same one.
+
+    The password is generated server-side rather than taken from the request
+    body, so the plaintext exists in exactly one response and is never stored or
+    logged. Hand it to the user out-of-band; they change it from Settings.
+    """
+    if _get_session_role(request) != "owner":
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+
+    user = users.get_user(username)
+    if not user:
+        return JSONResponse({"ok": False, "detail": "User not found"}, status_code=404)
+
+    temp = password_reset.generate_temporary_password()
+    ok, reason = users.validate_password(temp)
+    if not ok:  # generator guarantees this passes; refuse rather than half-apply
+        log.error(f"Generated temp password failed validation: {reason}")
+        return JSONResponse({"ok": False, "detail": "Could not generate a password"}, status_code=500)
+    if not users.update_user_password(username, temp):
+        return JSONResponse({"ok": False, "detail": "Failed to update password"}, status_code=500)
+
+    # The login lockout is per-IP, not per-user, so a reset does NOT clear it.
+    # If they were locked out, the new password still fails until the window
+    # expires -- say so, or the reset looks broken.
+    now = time.time()
+    locked_ips = sum(
+        1 for att in _unlock_attempts.values()
+        if len([t for t in att if now - t < UNLOCK_WINDOW_SECONDS]) >= UNLOCK_MAX_ATTEMPTS
+    )
+    note = ""
+    if locked_ips:
+        note = (f" Note: {locked_ips} address(es) are currently rate-limited from failed "
+                f"logins. If that's them, the new password won't work until the "
+                f"{UNLOCK_WINDOW_SECONDS // 60}-minute window expires.")
+
+    log.info(f"Owner reset the password for user {username}")  # never log the value
+    return JSONResponse({
+        "ok": True,
+        "username": username,
+        "temporary_password": temp,
+        "detail": ("Temporary password issued. Give it to them directly -- it is shown once "
+                   "and is not stored anywhere in readable form. Ask them to change it from "
+                   "Settings once they're back in." + note),
+    })
 
 
 @app.post("/api/change-password")
