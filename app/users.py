@@ -51,6 +51,22 @@ def get_session_secret() -> bytes:
     return _SESSION_SECRET
 
 
+def _parse_role(fields: dict) -> str:
+    """Least-privilege role parsing.
+
+    A missing or blank Role cell used to default to OWNER -- so the entire
+    owner-only boundary (user management, password resets) was one empty
+    Airtable cell wide. Rows created by this app always write Role explicitly;
+    a blank cell only exists if a row was hand-made in Airtable, and a
+    hand-made row with no stated role must not be the most powerful kind.
+
+    Whitespace is stripped so a hand-typed " owner" is honoured rather than
+    silently demoted; casing is preserved because the table's singleSelect
+    defines the canonical lowercase values.
+    """
+    return (fields.get("Role") or "").strip() or "staff"
+
+
 def validate_username(username: str) -> tuple:
     """Return (ok: bool, reason: str). Alphanumeric + underscore/dash, 3–32 chars, no colons."""
     if not username or len(username) < 3:
@@ -154,7 +170,7 @@ def lookup_user(username: str) -> Optional[dict]:
                 "username": fields.get("Username", ""),
                 "email": fields.get("Email", ""),
                 "password_hash": fields.get("PasswordHash", ""),
-                "role": fields.get("Role", "owner"),
+                "role": _parse_role(fields),
                 "created_at": fields.get("CreatedAt", ""),
                 "last_login": fields.get("LastLogin", ""),
             }
@@ -271,7 +287,7 @@ def list_users() -> list:
                         "record_id": rec["id"],
                         "username": fields.get("Username", ""),
                         "email": fields.get("Email", ""),
-                        "role": fields.get("Role", "owner"),
+                        "role": _parse_role(fields),
                         "created_at": fields.get("CreatedAt", ""),
                         "last_login": fields.get("LastLogin", ""),
                     })
