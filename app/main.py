@@ -375,19 +375,61 @@ LOCK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <form id="f" style="display:flex;flex-direction:column;gap:14px;align-items:center;padding:36px 40px;background:rgba(20,14,26,0.85);border:1px solid rgba(196,150,230,0.35);border-radius:16px">
 <div style="font-weight:700;font-size:19px;letter-spacing:0.16em;background:linear-gradient(180deg,#e0b8f0,#b87ad9);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent">THE DREAMERIE</div>
 <div style="font-size:11px;letter-spacing:0.4em;color:#c8ccd2">COMMAND CENTER</div>
+<div id="codeBox" style="display:flex;flex-direction:column;gap:14px;align-items:center">
 <input id="c" type="password" placeholder="Access code" autocomplete="current-password" style="margin-top:10px;padding:11px 14px;font-size:16px;width:220px;color:#e6e2d6;background:rgba(26,18,34,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:10px;text-align:center">
-<button style="padding:10px 26px;font-weight:600;font-size:14px;background:linear-gradient(180deg,#d9a8ec,#b87ad9);color:#241530;border:none;border-radius:10px;cursor:pointer">Unlock</button>
+<button id="unlockBtn" style="padding:10px 26px;font-weight:600;font-size:14px;background:linear-gradient(180deg,#d9a8ec,#b87ad9);color:#241530;border:none;border-radius:10px;cursor:pointer">Unlock</button>
 <button id="pk" type="button" style="display:none;padding:9px 22px;font-weight:600;font-size:13px;background:none;color:#d9a8ec;border:1px solid rgba(196,150,230,0.5);border-radius:10px;cursor:pointer">Use fingerprint / Face ID</button>
+</div>
+<div id="userBox" style="display:none;flex-direction:column;gap:14px;align-items:center">
+<input id="u" type="text" placeholder="Username" autocomplete="username" style="margin-top:10px;padding:11px 14px;font-size:16px;width:220px;color:#e6e2d6;background:rgba(26,18,34,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:10px;text-align:center">
+<input id="p" type="password" placeholder="Password" autocomplete="current-password" style="padding:11px 14px;font-size:16px;width:220px;color:#e6e2d6;background:rgba(26,18,34,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:10px;text-align:center">
+<label style="display:flex;gap:8px;align-items:center;font-size:12px;color:#c8ccd2;cursor:pointer"><input id="rm" type="checkbox" style="accent-color:#b87ad9"> Stay signed in on this device</label>
+<button id="loginBtn" type="button" style="padding:10px 26px;font-weight:600;font-size:14px;background:linear-gradient(180deg,#d9a8ec,#b87ad9);color:#241530;border:none;border-radius:10px;cursor:pointer">Sign in</button>
+</div>
+<a id="toggleMode" href="#" style="font-size:12px;color:#9aa0aa;text-decoration:none;border-bottom:1px dotted rgba(200,204,210,0.35)">Have your own username? Sign in here</a>
 <div id="m" style="font-size:12px;color:#e0a48f;min-height:16px"></div>
 </form>
 <script>
-document.getElementById('f').addEventListener('submit', async (e) => {
+// Two doors, one gate. The access code stays the default and is what Susan
+// sees first; the username form is opt-in for people with their own account
+// (Nick). Submitting the form runs whichever door is currently showing --
+// the Enter key must never silently fire the wrong one.
+const m = document.getElementById('m');
+let userMode = false;
+document.getElementById('toggleMode').addEventListener('click', (e) => {
   e.preventDefault();
+  userMode = !userMode;
+  document.getElementById('codeBox').style.display = userMode ? 'none' : 'flex';
+  document.getElementById('userBox').style.display = userMode ? 'flex' : 'none';
+  e.target.textContent = userMode ? 'Use the shared access code instead' : 'Have your own username? Sign in here';
+  m.textContent = '';
+  (userMode ? document.getElementById('u') : document.getElementById('c')).focus();
+});
+
+async function unlockWithCode() {
   const r = await fetch('/api/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: document.getElementById('c').value }) });
   if (r.ok) { location.reload(); return; }
   const j = await r.json().catch(() => ({}));
-  document.getElementById('m').textContent = j.detail || 'Incorrect code';
+  m.textContent = j.detail || 'Incorrect code';
+}
+
+async function signInWithUsername() {
+  const u = document.getElementById('u').value.trim();
+  const p = document.getElementById('p').value;
+  if (!u || !p) { m.textContent = 'Enter your username and password.'; return; }
+  m.textContent = 'Signing in...';
+  const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u, password: p, remember_me: document.getElementById('rm').checked }) });
+  if (r.ok) { location.reload(); return; }
+  const j = await r.json().catch(() => ({}));
+  m.textContent = j.detail || 'Invalid username or password';
+}
+
+document.getElementById('f').addEventListener('submit', (e) => {
+  e.preventDefault();
+  (userMode ? signInWithUsername : unlockWithCode)();
 });
+document.getElementById('loginBtn').addEventListener('click', signInWithUsername);
 // Fingerprint / Face ID. Additive: the code input above is untouched and
 // always works. Manual base64url conversion instead of the parse*FromJSON
 // helpers -- those need Safari 17.4+/Chrome 118+ and we don't know her iOS.
