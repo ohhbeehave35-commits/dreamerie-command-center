@@ -1,0 +1,43 @@
+name: keep-alive
+
+# Susan's Command Center runs on Render's FREE tier (render.yaml: plan: free),
+# which spins the app down after ~15 minutes with no traffic. When she comes
+# back after a pause, her first request hits a sleeping app: the cold start
+# takes 30-60s, her phone's request times out first, and she sees "trouble
+# reaching server / Annabelle down." Then it wakes and works again -- the exact
+# intermittent failure she reported. The server is healthy; it's just asleep.
+#
+# This pings the public, auth-free /healthz every 10 minutes so the app never
+# goes idle long enough to sleep. It costs nothing.
+#
+# NOTE ON RELIABILITY: GitHub's scheduled runners are best-effort and can be
+# delayed (occasionally past 15 min) or skipped under load, so this greatly
+# reduces sleep incidents but does not guarantee zero. The guaranteed fixes are
+# an external uptime monitor pinging every 5 min (e.g. a free cron-job.org /
+# UptimeRobot account) or upgrading the Render service off the free tier.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes
+  workflow_dispatch: {}        # allow a manual "wake it now" from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /healthz until it answers
+        run: |
+          URL="https://dreamerie-command-center.onrender.com/healthz"
+          # Retry across a cold start: up to 5 tries, 20s apart (~100s), which
+          # covers a Render free-tier wake-up.
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$URL" || echo 000)
+            echo "attempt $i -> $code"
+            if [ "$code" = "200" ]; then
+              echo "awake"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "still not answering after retries" >&2
+          exit 1
