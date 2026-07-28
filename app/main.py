@@ -685,9 +685,20 @@ def get_current_user(request: Request) -> JSONResponse:
     """Owner-only. Return info about the currently logged-in user."""
     session_token = request.cookies.get("cc_session")
     if not session_token:
+        # No per-user session. On an access-code deployment that is normal, not
+        # an error: report a benign identity so the UI shows a signed-in state
+        # instead of a "session expired" banner. access_mode tells the frontend
+        # not to expect a per-user account. This grants no backend privilege --
+        # owner-only endpoints check the session role, which is still absent.
+        if _access_authenticated(request):
+            return JSONResponse({"ok": True, "username": None, "role": None,
+                                 "access_mode": True})
         return JSONResponse({"username": None}, status_code=401)
     username = users.verify_session_token(session_token)
     if not username:
+        if _access_authenticated(request):
+            return JSONResponse({"ok": True, "username": None, "role": None,
+                                 "access_mode": True})
         return JSONResponse({"username": None}, status_code=401)
     user = users.get_user(username)
     if not user:
@@ -712,6 +723,44 @@ def _authed_username(request: Request) -> Optional[str]:
     return users.verify_session_token(token)
 
 
+# A stable identity for a deployment that authenticates with the shared access
+# code instead of per-user logins (Susan's build has no login form at all -- the
+# only way in is the code). On such a deployment the access cookie IS the
+# identity: there is exactly one, so there is no cross-account bleed to guard
+# against. Treating it as "not authenticated" is what 401'd /api/history and
+# /api/me and showed a correctly-signed-in user a permanent "session expired,
+# sign in again" banner -- with no login form to sign in to.
+_ACCESS_SCOPE = "access"
+
+
+def _access_authenticated(request: Request) -> bool:
+    """True if the request carries a valid access-code cookie. Mirrors the
+    access_gate's own cc_access check, so it can never disagree with the gate
+    about whether this request is legitimately inside."""
+    code = get_access_code()
+    if not code:
+        return False
+    return secrets.compare_digest(request.cookies.get("cc_access", ""), code)
+
+
+def _identity_scope(request: Request) -> Optional[str]:
+    """The bucket prefix for whoever is asking, or None if we truly cannot say.
+
+      per-user session  -> "user:<name>"   (isolated per account)
+      access-code only  -> "access"        (one shared identity, by design)
+      neither           -> None            (refuse to guess)
+
+    A per-user session wins when present, so a real multi-account deployment
+    keeps full isolation and only an access-code-only deployment ever lands on
+    the shared bucket."""
+    username = _authed_username(request)
+    if username:
+        return f"user:{username}"
+    if _access_authenticated(request):
+        return _ACCESS_SCOPE
+    return None
+
+
 def _scoped_chat_id(request: Request, chat_id: str) -> str:
     """Namespace chat_id by the logged-in account so two different logins
     never read or write each other's conversation history -- e.g. if Vinny
@@ -732,12 +781,12 @@ def _scoped_chat_id(request: Request, chat_id: str) -> str:
 
     Callers that touch per-user memory must use _scoped_chat_id_checked()
     instead, which refuses to guess. This one stays for non-memory paths."""
-    username = _authed_username(request)
-    if not username:
-        log.warning("MEMORY_SCOPE_FALLBACK chat_id=%s -- no cc_session; "
-                    "history would resolve to the unscoped bucket", chat_id)
+    scope = _identity_scope(request)
+    if scope is None:
+        log.warning("MEMORY_SCOPE_FALLBACK chat_id=%s -- no session or access "
+                    "cookie; history would resolve to the unscoped bucket", chat_id)
         return chat_id
-    return f"user:{username}:{chat_id}"
+    return f"{scope}:{chat_id}"
 
 
 def _scoped_chat_id_checked(request: Request, chat_id: str) -> Optional[str]:
@@ -747,10 +796,10 @@ def _scoped_chat_id_checked(request: Request, chat_id: str) -> Optional[str]:
     client demo ended with Annabelle saying she had no memory; making the caller
     handle "I don't know who you are" turns a silent data problem into an
     honest, fixable "your session expired, sign in again"."""
-    username = _authed_username(request)
-    if not username:
+    scope = _identity_scope(request)
+    if scope is None:
         return None
-    return f"user:{username}:{chat_id}"
+    return f"{scope}:{chat_id}"
 
 
 class FileAttachment(BaseModel):
