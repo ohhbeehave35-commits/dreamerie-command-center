@@ -16,6 +16,34 @@
     var isSmall = window.innerWidth < 820 || /Mobi|Android/i.test(navigator.userAgent);
     var forced = new URLSearchParams(location.search).get('full') === '1';
     if (isSmall && !forced) { location.replace('/static/basic.html'); }
+
+    // ...but ?full=1 on a phone was a ONE-WAY DOOR. This page has no @media
+    // rules at all, so on a phone it overflows horizontally, the corner panels
+    // overlap each other, and the only link back ("Account > Basic UI") sits
+    // inside a hover dropdown in the very top nav that just became unreachable.
+    // Pin an exit that cannot be covered or scrolled off. Desktop is untouched:
+    // everything below is inside `isSmall && forced`.
+    if (isSmall && forced) {
+      document.addEventListener('DOMContentLoaded', function () {
+        var bar = document.createElement('div');
+        bar.setAttribute('role', 'region');
+        bar.setAttribute('aria-label', 'Desktop layout notice');
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
+          'display:flex;gap:10px;align-items:center;justify-content:space-between;' +
+          'padding:8px 12px;background:#12120f;border-bottom:1px solid #d4af37;' +
+          'font:500 12px/1.35 Inter,system-ui,sans-serif;color:#e6cf88';
+        var msg = document.createElement('span');
+        msg.textContent = 'Desktop layout \u2014 not built for phone screens.';
+        var back = document.createElement('a');
+        back.href = '/static/basic.html';
+        back.textContent = 'Mobile UI \u2192';
+        back.style.cssText = 'flex:none;padding:8px 13px;border-radius:8px;background:#d4af37;' +
+          'color:#12120f;text-decoration:none;font-weight:700;white-space:nowrap';
+        bar.appendChild(msg);
+        bar.appendChild(back);
+        document.body.appendChild(bar);
+      });
+    }
   })();
 </script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
