@@ -1,15 +1,24 @@
 """
 Airtable-backed Business Events tracker for Susan's Command Center.
 
-One shared table covering BOTH sides of her business, tagged by which one
-each event belongs to:
+One shared table covering EVERY business on this deployment, tagged by which
+one each event belongs to:
 - "The Dreamerie" -- shop pop-ups, markets, craft fairs, vendor booths
 - "Suzy D / TikTok" -- livestream collabs, brand deals, shoutout swaps
-- "Both" -- things that touch both sides (e.g. a market appearance she also
-  streams live from)
+- "Bear Arms" -- trade shows, range days, supplier meets
+- "NS Peptides" -- trade shows, lab/supplier meets (research-use-only context)
+- "Both" -- things that touch more than one side (e.g. a market appearance she
+  also streams live from)
 
-Lets Susan (and the assistant) cross-reference what's coming up across both
-identities in one place instead of two disconnected mental lists.
+Lets Susan (and the assistant) cross-reference what's coming up across all of
+them in one place instead of several disconnected mental lists.
+
+NOTE: this list started at Dreamerie/Suzy D only, from when the deployment was
+a two-business build. It went out of step when Bear Arms and NS Peptides were
+added -- crm.py already offered all four, so an event simply could not be filed
+against the two newer businesses. Keep this in step with crm.py's Business
+options; a filter the UI offers but the backend cannot populate is worse than
+no filter, because it reads as "no events" rather than "not supported".
 """
 
 import os
@@ -22,7 +31,7 @@ _API = "https://api.airtable.com"
 TABLE_NAME = os.environ.get("AIRTABLE_EVENTS_TABLE", "Business Events")
 _table_id_cache = None
 
-BUSINESS_CHOICES = ["The Dreamerie", "Suzy D / TikTok", "Both"]
+BUSINESS_CHOICES = ["The Dreamerie", "Suzy D / TikTok", "Bear Arms", "NS Peptides", "Both"]
 STATUS_CHOICES = ["Idea", "Tentative", "Confirmed", "Done", "Cancelled"]
 
 _FIELDS = [

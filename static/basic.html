@@ -50,8 +50,22 @@
 </head>
 <body>
   <h1>The Dreamerie Command Center</h1>
-  <div class="sub">Your assistant — routes between The Dreamerie shop and Suzy D content specialists</div>
+  <div class="sub">Your assistant — routes across The Dreamerie, Suzy D, Bear Arms and NS Peptides</div>
   <a class="fulllink" href="/?full=1">Full visual UI &#8599;</a>
+
+  <!-- Business focus. The desktop UI has had this since the deployment became a
+       four-company build; mobile never got it, so on a phone every turn ran in
+       "combined" (the server default) with no way to focus one business. The
+       VALUES here must match agents.MODE_PROMPTS keys, and the stored key is
+       the SAME cc_mode desktop uses, so a choice made on either follows her to
+       the other. Labels only are cosmetic; values are load-bearing. -->
+  <div id="modeRow" style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px">
+    <button class="tab modeBtn" data-mode="dreamerie" style="font-size:12px">🕯️ Dreamerie</button>
+    <button class="tab modeBtn" data-mode="suzy_d" style="font-size:12px">👑 Suzy D</button>
+    <button class="tab modeBtn" data-mode="bear_arms" style="font-size:12px">🐻 Bear Arms</button>
+    <button class="tab modeBtn" data-mode="peptides" style="font-size:12px">🧬 NS Peptides</button>
+    <button class="tab modeBtn" data-mode="combined" style="font-size:12px">All</button>
+  </div>
 
   <div id="topnav">
     <button class="tab active" data-tab="chat">Chat</button>
@@ -74,10 +88,15 @@
   </div>
 
   <div id="tab-events" style="display:none">
-    <div style="display:flex;gap:6px;margin-bottom:12px">
+    <!-- data-biz values must match events.py BUSINESS_CHOICES exactly -- the
+         filter compares against the stored Business field, so a mismatch shows
+         an empty list rather than an error. -->
+    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
       <button class="tab eventsFilterBtn active" data-biz="All" style="font-size:12px">All</button>
       <button class="tab eventsFilterBtn" data-biz="The Dreamerie" style="font-size:12px">🕯️ Dreamerie</button>
       <button class="tab eventsFilterBtn" data-biz="Suzy D / TikTok" style="font-size:12px">👑 Suzy D</button>
+      <button class="tab eventsFilterBtn" data-biz="Bear Arms" style="font-size:12px">🐻 Bear Arms</button>
+      <button class="tab eventsFilterBtn" data-biz="NS Peptides" style="font-size:12px">🧬 NS Peptides</button>
     </div>
     <div id="eventsList"><div style="color:#B4B3A8;font-size:13px">Loading…</div></div>
   </div>
@@ -174,7 +193,15 @@ function renderEvents(business) {
     if (!evs.length) { el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">No events logged yet — mention one in chat.</div>'; return; }
     el.innerHTML = '';
     evs.forEach(f => {
-      const tag = f.Business === 'Suzy D / TikTok' ? '👑' : (f.Business === 'The Dreamerie' ? '🕯️' : '🕯️👑');
+      // Keep in step with events.py BUSINESS_CHOICES. Unknown/"Both" falls
+      // through to the multi-business marker rather than rendering blank.
+      const BIZ_TAG = {
+        'The Dreamerie': '🕯️',
+        'Suzy D / TikTok': '👑',
+        'Bear Arms': '🐻',
+        'NS Peptides': '🧬',
+      };
+      const tag = BIZ_TAG[f.Business] || '🕯️👑';
       const div = document.createElement('div');
       div.className = 'card';
       div.innerHTML = '<h3>' + tag + ' ' + (f.Event || '').replace(/</g, '&lt;') + ' <span class="badge">' + (f.Status || '') + '</span></h3>' +
@@ -185,6 +212,23 @@ function renderEvents(business) {
   }).catch(() => { el.innerHTML = '<div style="color:#B4B3A8;font-size:13px">Couldn\'t load events.</div>'; });
 }
 document.querySelectorAll('.eventsFilterBtn').forEach(b => b.addEventListener('click', () => renderEvents(b.dataset.biz)));
+
+// ---- Business focus (mode) ----
+// Shares the cc_mode key with the desktop UI on purpose: picking a business on
+// the phone and then opening the full UI (or the reverse) keeps the same focus
+// instead of silently resetting. "combined" matches the server's own default,
+// so an unset key behaves exactly as before this existed.
+let currentMode = localStorage.getItem('cc_mode') || 'combined';
+function applyModeButtons() {
+  document.querySelectorAll('.modeBtn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === currentMode));
+}
+document.querySelectorAll('.modeBtn').forEach(b => b.addEventListener('click', () => {
+  currentMode = b.dataset.mode;
+  localStorage.setItem('cc_mode', currentMode);
+  applyModeButtons();
+}));
+applyModeButtons();
 
 // ---- History ----
 function renderHistory() {
@@ -380,7 +424,10 @@ form.addEventListener('submit', async (e) => {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, history }),
+      // mode was never sent from mobile, so every phone turn silently ran in
+      // the server default ("combined"). Sending it is what makes the switcher
+      // above actually change which tools and prompt the assistant gets.
+      body: JSON.stringify({ message: text, history, mode: currentMode }),
     });
     const data = await res.json();
     const meta = data.delegated_to && data.delegated_to.length
