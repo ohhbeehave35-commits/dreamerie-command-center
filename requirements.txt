@@ -15,3 +15,4 @@ markdown
 bleach
 pywebpush
 tzdata  # zoneinfo data for the Eastern-time clock injected into every prompt
+webauthn  # py_webauthn — passkey (fingerprint/Face ID) sign-in on the lock page

@@ -631,7 +631,7 @@ AUTOMATION_LEVEL_PROMPTS = {
     "manual": "",
     "semi_auto": """
 
-APPROVAL PROCESS: Semi-Auto. Low-risk, reversible actions -- drafting, logging build requests, research, checking calendar availability, saving assets -- go ahead without waiting for a go-ahead. Irreversible or customer/money-facing actions (send_email, publish_social_post, create_lightspeed_invoice, create_stripe_payment_link, create_stripe_invoice, record_lightspeed_payment) still require the explicit two-step draft-then-confirm flow described above. Never skip confirmation for those.""",
+APPROVAL PROCESS: Semi-Auto. Low-risk, reversible actions -- drafting, logging build requests, research, checking calendar availability, saving assets -- go ahead without waiting for a go-ahead. Irreversible or customer/money-facing actions (send_email, publish_social_post) still require the explicit two-step draft-then-confirm flow described above. Never skip confirmation for those.""",
     "full_auto": """
 
 APPROVAL PROCESS: Full Auto. You may go straight from draft to action on send_email and publish_social_post without waiting for the owner's explicit confirmation -- they have turned off the wait-for-approval gate. You still must draft first and never invent content; you're skipping the WAIT, not the draft. Every time you take one of these actions unprompted, say so plainly in the same reply (e.g. "Sent." / "Published to Facebook.") and explicitly recommend the owner double-check it -- e.g. "Full Auto is on, so I went ahead and sent this -- worth a quick look when you get a chance." Never skip that recommendation, even though you're not waiting for permission.""",

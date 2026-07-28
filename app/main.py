@@ -57,6 +57,8 @@ from . import webfetch
 from . import seo_audit
 from . import config_check
 from . import support
+from . import passkeys
+from . import signed_tokens
 from .agents import (
     MAIN_BRAIN_SYSTEM_PROMPT,
     build_main_brain_prompt,
@@ -341,22 +343,24 @@ async def security_headers(request: Request, call_next):
 
 @app.on_event("startup")
 def startup_init():
-    """Initialize the system on startup: create default owner if needed."""
+    """Startup checks. This used to CREATE a default owner/changeme account --
+    a published credential on an access-code deployment that never needed it
+    (Susan signs in with the code; nothing in her UI even calls /api/login).
+    Creation is gone. If the account already exists on Airtable it is flagged
+    on the /support page every boot until it is deleted from Settings → Users,
+    and login-time defense lives in the /api/login handler."""
     if not crm.is_configured():
         return  # No Airtable, skip
-    # Check if any users exist yet
-    if users.list_users():
-        return  # Users already exist, don't overwrite
-    # Create default owner account: username=owner, password=changeme
-    # This is a safety default. In production, the owner should change this immediately
-    # and is prompted to do so in the UI.
-    default_username = "owner"
-    default_password = "changeme"
-    if users.add_user(default_username, "owner@example.com", default_password, "owner"):
-        print(f"[INIT] Created default owner account: {default_username} / {default_password}")
-        print("[INIT] WARNING: Change this password immediately in Settings!")
-    else:
-        print(f"[INIT] Default owner account ({default_username}) already exists or error creating it")
+    try:
+        existing = {u.get("username") for u in users.list_users()}
+    except Exception:
+        return  # Airtable blip at boot; the login-time guard still holds
+    if "owner" in existing:
+        support.record_note(
+            "default_credential",
+            "The 'owner' default account still exists on Airtable. If its "
+            "password is still 'changeme' it is a PUBLISHED credential -- "
+            "delete the account in Settings → Users (or reset its password).")
 
 
 # ---- Access gate (hosted deployments) -------------------------------------
@@ -373,6 +377,7 @@ LOCK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div style="font-size:11px;letter-spacing:0.4em;color:#c8ccd2">COMMAND CENTER</div>
 <input id="c" type="password" placeholder="Access code" autocomplete="current-password" style="margin-top:10px;padding:11px 14px;font-size:16px;width:220px;color:#e6e2d6;background:rgba(26,18,34,0.9);border:1px solid rgba(200,204,210,0.2);border-radius:10px;text-align:center">
 <button style="padding:10px 26px;font-weight:600;font-size:14px;background:linear-gradient(180deg,#d9a8ec,#b87ad9);color:#241530;border:none;border-radius:10px;cursor:pointer">Unlock</button>
+<button id="pk" type="button" style="display:none;padding:9px 22px;font-weight:600;font-size:13px;background:none;color:#d9a8ec;border:1px solid rgba(196,150,230,0.5);border-radius:10px;cursor:pointer">Use fingerprint / Face ID</button>
 <div id="m" style="font-size:12px;color:#e0a48f;min-height:16px"></div>
 </form>
 <script>
@@ -382,6 +387,39 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   if (r.ok) { location.reload(); return; }
   const j = await r.json().catch(() => ({}));
   document.getElementById('m').textContent = j.detail || 'Incorrect code';
+});
+// Fingerprint / Face ID. Additive: the code input above is untouched and
+// always works. Manual base64url conversion instead of the parse*FromJSON
+// helpers -- those need Safari 17.4+/Chrome 118+ and we don't know her iOS.
+const b64u = {
+  dec: s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0)),
+  enc: b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'')
+};
+if (window.PublicKeyCredential) {
+  fetch('/api/passkey/enabled').then(r => r.json()).then(d => {
+    if (d.enabled) document.getElementById('pk').style.display = 'block';
+  }).catch(() => {});
+}
+document.getElementById('pk').addEventListener('click', async () => {
+  const m = document.getElementById('m');
+  try {
+    const o = await fetch('/api/passkey/auth-options', { method: 'POST' }).then(r => r.json());
+    if (!o.options) { m.textContent = o.detail || 'Fingerprint sign-in unavailable -- use your access code.'; return; }
+    const pub = o.options;
+    pub.challenge = b64u.dec(pub.challenge);
+    (pub.allowCredentials || []).forEach(c => c.id = b64u.dec(c.id));
+    const cred = await navigator.credentials.get({ publicKey: pub });
+    const body = { state: o.state, credential: { id: cred.id, rawId: b64u.enc(cred.rawId), type: cred.type,
+      response: { clientDataJSON: b64u.enc(cred.response.clientDataJSON),
+                  authenticatorData: b64u.enc(cred.response.authenticatorData),
+                  signature: b64u.enc(cred.response.signature),
+                  userHandle: cred.response.userHandle ? b64u.enc(cred.response.userHandle) : null } } };
+    const r = await fetch('/api/passkey/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) { location.reload(); return; }
+    m.textContent = (await r.json().catch(() => ({}))).detail || "Fingerprint didn't work -- your access code always does.";
+  } catch (e) {
+    m.textContent = 'Fingerprint cancelled -- you can always use your access code.';
+  }
 });
 </script></body></html>"""
 
@@ -396,11 +434,17 @@ async def access_gate(request: Request, call_next):
             # and the Unlock button 401s before routing, which is exactly how
             # this deployment locked everyone out.
             "/api/unlock",
+            # The fingerprint door in the same gate. Gating any of these three
+            # reproduces the /api/unlock lockout verbatim: the lock page's
+            # passkey button would 401 before routing. The register/credentials
+            # endpoints are deliberately NOT here -- a stranger must never be
+            # able to enroll a fingerprint.
+            "/api/passkey/enabled", "/api/passkey/auth-options", "/api/passkey/auth",
             "/api/login", "/api/public-chat", "/api/brand", "/widget",
-            "/privacy", "/terms", "/capabilities", "/auth/google-callback",
+            "/privacy", "/auth/google-callback",
             "/auth/drive-callback", "/dropbox/callback",
             "/lightspeed/callback",
-            "/api/webhooks/stripe", "/api/webhooks/buildertrend",
+            "/api/webhooks/stripe",
             "/api/proposals/sign",  # proposal viewer accessed by clients, not owners
             "/proposal",  # client-facing proposal viewer
             "/healthz",  # uptime monitor probe -- must never require auth
@@ -645,6 +689,308 @@ def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
     return JSONResponse({"ok": False, "detail": "Incorrect code"}, status_code=401)
 
 
+# ── PASSKEY (fingerprint / Face ID) SIGN-IN ──────────────────────────────────
+# Additive to the access code, never a replacement: a successful passkey auth
+# sets the SAME cc_access cookie /api/unlock sets, so the gate, identity scope,
+# and Susan's chat history all behave exactly as if she had typed the code.
+# A total WebAuthn failure of any kind leaves the code path byte-identical.
+
+import webauthn as _webauthn
+from webauthn.helpers import (
+    base64url_to_bytes as _wa_b64d,
+    bytes_to_base64url as _wa_b64e,
+    options_to_json_dict as _wa_options_dict,
+)
+from webauthn.helpers.structs import (
+    AttestationConveyancePreference,
+    AuthenticatorSelectionCriteria,
+    PublicKeyCredentialDescriptor,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
+
+# One-time-use guard for auth challenges. Stateless signed tokens survive
+# restarts by design, so replay inside the TTL is bounded here instead.
+# Best-effort on a single Render instance; the token TTL is the hard cap.
+_used_passkey_challenges: Dict[str, float] = {}
+_PASSKEY_CHALLENGE_TTL = 180
+
+
+def _rp_and_origin(request: Request) -> tuple:
+    """(rp_id, expected_origins) for this request's host. .onrender.com is on
+    the Public Suffix List, so the full hostname is a valid rp_id."""
+    host = request.url.hostname or "localhost"
+    if host in ("localhost", "127.0.0.1"):
+        return host, [f"http://{host}:{request.url.port or 8137}",
+                      f"http://{host}:8000", f"http://{host}:8137"]
+    return host, [f"https://{host}"]
+
+
+def _challenge_already_used(challenge_b64: str) -> bool:
+    now = time.time()
+    for k in [k for k, t in _used_passkey_challenges.items()
+              if now - t > _PASSKEY_CHALLENGE_TTL]:
+        _used_passkey_challenges.pop(k, None)
+    if challenge_b64 in _used_passkey_challenges:
+        return True
+    _used_passkey_challenges[challenge_b64] = now
+    return False
+
+
+@app.get("/api/passkey/enabled")
+def passkey_enabled(request: Request) -> JSONResponse:
+    """Gate-exempt. Should the lock page show the fingerprint button?
+    Never errors -- 'no button' is the safe degradation."""
+    if not crm.is_configured():
+        return JSONResponse({"enabled": False})
+    rp_id, _ = _rp_and_origin(request)
+    return JSONResponse({"enabled": passkeys.enabled_cached(rp_id)})
+
+
+@app.post("/api/passkey/auth-options")
+def passkey_auth_options(request: Request) -> JSONResponse:
+    """Gate-exempt. Start a fingerprint sign-in: challenge + allowed credentials.
+
+    Same per-IP rate window as /api/unlock, and deliberately NO global
+    backstop -- a global counter on the gate would let anyone lock Susan out
+    of her own app from throwaway addresses (see the unlock docstring).
+    """
+    ip = _client_ip(request)
+    now = time.time()
+    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
+        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
+        return JSONResponse(
+            {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
+            status_code=429,
+        )
+    rp_id, _ = _rp_and_origin(request)
+    try:
+        creds = passkeys.list_credentials(rp_id)
+    except passkeys.PasskeyStoreUnavailable:
+        return JSONResponse(
+            {"ok": False, "detail": "Fingerprint sign-in is temporarily unavailable -- "
+                                    "your access code still works."},
+            status_code=503,
+        )
+    if not creds:
+        return JSONResponse(
+            {"ok": False, "detail": "No fingerprint is set up yet -- use your access code."},
+            status_code=404,
+        )
+    opts = _webauthn.generate_authentication_options(
+        rp_id=rp_id,
+        timeout=120000,
+        allow_credentials=[
+            PublicKeyCredentialDescriptor(id=passkeys._b64u_dec(c["CredentialID"]))
+            for c in creds
+        ],
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    state = signed_tokens.mint("webauthn-auth",
+                               {"challenge": _wa_b64e(opts.challenge), "rp": rp_id},
+                               ttl_seconds=_PASSKEY_CHALLENGE_TTL)
+    return JSONResponse({"state": state, "options": _wa_options_dict(opts)})
+
+
+class PasskeyAuthRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    state: str
+    credential: dict
+
+
+@app.post("/api/passkey/auth")
+def passkey_auth(req: PasskeyAuthRequest, request: Request) -> JSONResponse:
+    """Gate-exempt. Finish a fingerprint sign-in: verify the assertion, set the
+    SAME gate cookie /api/unlock sets. Failures are rate-limited like wrong
+    codes; a store outage is a 503, never a 'wrong fingerprint', and is never
+    charged to the limiter (the users.UserLookupUnavailable lesson)."""
+    ip = _client_ip(request)
+    now = time.time()
+    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
+        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
+        return JSONResponse(
+            {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
+            status_code=429,
+        )
+
+    def _fail(detail: str, status: int = 401) -> JSONResponse:
+        attempts.append(now)
+        _unlock_attempts[ip] = attempts
+        support.record_note("passkey_failed", detail, path="/api/passkey/auth")
+        return JSONResponse({"ok": False, "detail": detail}, status_code=status)
+
+    rp_id, origins = _rp_and_origin(request)
+    body = signed_tokens.verify("webauthn-auth", req.state)
+    if body is None or body.get("rp") != rp_id:
+        return _fail("Sign-in expired -- tap the fingerprint button again. "
+                     "Your access code always works too.")
+    challenge_b64 = body.get("challenge") or ""
+    if _challenge_already_used(challenge_b64):
+        return _fail("That sign-in was already used -- tap the fingerprint button again.")
+
+    cred_id = str(req.credential.get("rawId") or req.credential.get("id") or "")
+    try:
+        stored = passkeys.get_credential(cred_id)
+    except passkeys.PasskeyStoreUnavailable:
+        # NOT counted against the limiter: nothing is wrong with her fingerprint.
+        return JSONResponse(
+            {"ok": False, "detail": "Fingerprint sign-in is temporarily unavailable -- "
+                                    "your access code still works."},
+            status_code=503,
+        )
+    if not stored:
+        return _fail("This device's fingerprint isn't set up here -- use your access code, "
+                     "then add it again from Settings.")
+
+    try:
+        ver = _webauthn.verify_authentication_response(
+            credential=req.credential,
+            expected_challenge=_wa_b64d(challenge_b64),
+            expected_rp_id=rp_id,
+            expected_origin=origins,
+            credential_public_key=passkeys._b64u_dec(stored["PublicKey"]),
+            credential_current_sign_count=int(stored.get("SignCount") or 0),
+            require_user_verification=True,
+        )
+    except Exception as e:
+        return _fail("Fingerprint didn't verify -- your access code always works. "
+                     f"({type(e).__name__})")
+
+    effective_code = get_access_code()
+    if not effective_code:
+        # A cookie the gate can't match must not be minted (mirrors /api/unlock).
+        return JSONResponse(
+            {"ok": False, "detail": "No access code is configured for this deployment."},
+            status_code=503,
+        )
+    passkeys.touch(stored["record_id"], ver.new_sign_count)
+    _unlock_attempts.pop(ip, None)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("cc_access", effective_code, max_age=60 * 60 * 24 * 30,
+                    httponly=True, samesite="lax", secure=True)
+    return resp
+
+
+class PasskeyRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    state: str
+    label: str = ""
+    credential: dict
+
+
+@app.post("/api/passkey/register-options")
+def passkey_register_options(request: Request) -> JSONResponse:
+    """GATED (middleware) + owner check: only someone already inside may add a
+    fingerprint. Registration from outside would be a permanent skeleton key."""
+    if not _is_owner_request(request):
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    if not crm.is_configured():
+        return JSONResponse({"ok": False, "detail": "Airtable must be connected first."},
+                            status_code=503)
+    rp_id, _ = _rp_and_origin(request)
+    try:
+        existing = passkeys.list_credentials(rp_id)
+    except passkeys.PasskeyStoreUnavailable:
+        return JSONResponse({"ok": False, "detail": "Storage is temporarily unreachable -- "
+                                                    "try again in a minute."}, status_code=503)
+    opts = _webauthn.generate_registration_options(
+        rp_id=rp_id,
+        rp_name="The Dreamerie Command Center",
+        user_id=passkeys.get_user_handle(),
+        user_name="dreamerie-owner",
+        user_display_name="Dreamerie Owner",
+        attestation=AttestationConveyancePreference.NONE,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
+        exclude_credentials=[
+            PublicKeyCredentialDescriptor(id=passkeys._b64u_dec(c["CredentialID"]))
+            for c in existing
+        ],
+        timeout=120000,
+    )
+    state = signed_tokens.mint("webauthn-reg",
+                               {"challenge": _wa_b64e(opts.challenge), "rp": rp_id},
+                               ttl_seconds=300)
+    return JSONResponse({"state": state, "options": _wa_options_dict(opts)})
+
+
+@app.post("/api/passkey/register")
+def passkey_register(req: PasskeyRegisterRequest, request: Request) -> JSONResponse:
+    """GATED + owner check. Store the new device credential."""
+    if not _is_owner_request(request):
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    rp_id, origins = _rp_and_origin(request)
+    body = signed_tokens.verify("webauthn-reg", req.state)
+    if body is None or body.get("rp") != rp_id:
+        return JSONResponse({"ok": False, "detail": "Setup expired -- tap Add again."},
+                            status_code=401)
+    try:
+        ver = _webauthn.verify_registration_response(
+            credential=req.credential,
+            expected_challenge=_wa_b64d(body.get("challenge") or ""),
+            expected_rp_id=rp_id,
+            expected_origin=origins,
+            require_user_verification=True,
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False,
+                             "detail": f"Couldn't verify this device ({type(e).__name__})."},
+                            status_code=400)
+    transports = req.credential.get("response", {}).get("transports") or []
+    label = (req.label or "This device").strip()[:40]
+    try:
+        passkeys.add_credential(
+            cred_id_b64=_wa_b64e(ver.credential_id),
+            public_key_b64=_wa_b64e(ver.credential_public_key),
+            sign_count=ver.sign_count,
+            label=label,
+            rp_id=rp_id,
+            transports=json.dumps(transports)[:200],
+        )
+    except passkeys.PasskeyStoreUnavailable:
+        return JSONResponse({"ok": False, "detail": "Storage is temporarily unreachable -- "
+                                                    "try again in a minute."}, status_code=503)
+    return JSONResponse({"ok": True, "id": _wa_b64e(ver.credential_id), "label": label})
+
+
+@app.get("/api/passkey/credentials")
+def passkey_credentials(request: Request) -> JSONResponse:
+    """GATED + owner check. Devices enrolled -- labels and dates only, never keys."""
+    if not _is_owner_request(request):
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    rp_id, _ = _rp_and_origin(request)
+    try:
+        creds = passkeys.list_credentials(rp_id)
+    except passkeys.PasskeyStoreUnavailable:
+        return JSONResponse({"ok": False, "detail": "Storage is temporarily unreachable."},
+                            status_code=503)
+    return JSONResponse({"ok": True, "credentials": [
+        {"id": c["CredentialID"], "label": c.get("Label", "Device"),
+         "created_at": c.get("CreatedAt", ""), "last_used": c.get("LastUsedAt", "")}
+        for c in creds
+    ]})
+
+
+@app.delete("/api/passkey/credentials/{cred_id}")
+def passkey_delete(cred_id: str, request: Request) -> JSONResponse:
+    """GATED + owner check. Remove a device. Removing the last one is fine --
+    the access code always works."""
+    if not _is_owner_request(request):
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    try:
+        ok = passkeys.delete_credential(cred_id)
+    except passkeys.PasskeyStoreUnavailable:
+        return JSONResponse({"ok": False, "detail": "Storage is temporarily unreachable."},
+                            status_code=503)
+    if not ok:
+        return JSONResponse({"ok": False, "detail": "Device not found"}, status_code=404)
+    return JSONResponse({"ok": True, "note": "Your access code still works."})
+
+
 @app.post("/api/login")
 def login(req: LoginRequest, request: Request) -> JSONResponse:
     """Authenticate with username + password, return signed session token in cookie."""
@@ -684,6 +1030,24 @@ def login(req: LoginRequest, request: Request) -> JSONResponse:
         _unlock_attempts[ip] = attempts
         _global_unlock_attempts.append(now)
         return JSONResponse({"ok": False, "detail": "Invalid username or password"}, status_code=401)
+
+    # The shipped default credential (owner/changeme) is public knowledge -- it
+    # is printed in this repo's history. If it still verifies, that is not a
+    # login, it is an open door: refuse it, say why, and flag it on /support.
+    # A real owner is never locked out by this -- Susan uses the access code,
+    # and any legitimately-set password different from "changeme" passes.
+    if req.username == "owner" and req.password == "changeme":
+        support.record_note(
+            "default_credential",
+            "A login using the PUBLISHED default credential (owner/changeme) "
+            "was refused. Delete or repassword the 'owner' account in "
+            "Settings → Users.", path="/api/login")
+        return JSONResponse(
+            {"ok": False, "detail": "This account still has the factory default password, "
+                                    "which is published and therefore disabled. Reset it from "
+                                    "Settings → Users on an owner login, or use the access code."},
+            status_code=403,
+        )
 
     # Successful login: clear this IP's attempts (leave the global counter alone
     # so one valid login can't reset a backstop an attacker is filling).
@@ -1920,7 +2284,14 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 answer = f"Unknown tool: {block.name}"
             else:
                 delegated_to.append(SUB_AGENTS[agent_key]["name"])
-                query = block.input.get("query") or block.input.get("briefing", user_message)
+                # Read every argument name the delegation tools actually
+                # declare: ask_bear_arms_agent / ask_peptides_agent declare
+                # "question", and reading only query/briefing silently threw
+                # away the model's rephrased question and forwarded the raw
+                # user message instead.
+                query = (block.input.get("query")
+                         or block.input.get("question")
+                         or block.input.get("briefing", user_message))
                 answer = call_sub_agent(agent_key, query, active_model)
                 if answer.strip().startswith("NEEDS_SEARCH:"):
                     search_query = answer.split("NEEDS_SEARCH:", 1)[1].strip()
@@ -3413,22 +3784,93 @@ def privacy() -> FileResponse:
     return FileResponse("static/privacy.html")
 
 
-@app.get("/terms")
-def terms() -> FileResponse:
-    """Public terms of service, required for Twilio A2P 10DLC compliance."""
-    return FileResponse("static/terms.html")
+# /terms is gone: the route served a file that was never ported, so it 500'd
+# on every hit. The flagship's terms.html is a legal document naming Ohh
+# BeeHave LLC / Port St. Lucie -- the WRONG entity for Susan's businesses, so
+# it must not be copied here. If Twilio A2P is ever registered for this
+# deployment, write a real ToS for HER entity first, restore the route, and
+# re-add "/terms" to the access_gate exempt list.
 
 
-@app.get("/capabilities")
-def capabilities() -> FileResponse:
-    """Public capabilities deck -- for embedding on the Wix site or sharing directly."""
-    return FileResponse("static/capabilities.html")
+# /capabilities (the Stinger marketing deck) is gone: the file was never
+# ported, nothing here links to it, and the route 500'd on every hit.
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots_txt() -> str:
     """No public marketing site on this deployment -- keep crawlers out."""
     return "User-agent: *\nDisallow: /\n"
+
+
+# ── TEXT-TO-SPEECH ──────────────────────────────────────────────────────────
+# Restored after being dropped in the multi-company port while the UI that
+# calls it stayed (the /api/unlock pattern again): index.html POSTs every
+# spoken chunk here, so without this route Annabelle's voice was silently
+# dead -- every clip fetch 404'd, and the Settings voice picker saved a
+# preference nothing read.
+
+class TTSRequest(BaseModel):
+    text: str
+
+
+async def _grok_tts(text: str) -> bytes:
+    """Grok (xAI) neural TTS -> MP3 bytes. Raises on any failure, surfacing
+    the API's own error body so we can see exactly what it wants."""
+    async with httpx.AsyncClient(timeout=30) as http:
+        r = await http.post(
+            "https://api.x.ai/v1/tts",
+            headers={
+                "Authorization": f"Bearer {XAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"text": text, "voice_id": XAI_VOICE, "language": "en"},
+        )
+    if r.status_code != 200:
+        raise RuntimeError(f"xAI {r.status_code}: {r.text[:600]}")
+    if not r.content:
+        raise ValueError("empty audio")
+    return r.content
+
+
+async def _edge_tts(text: str, voice: str = "") -> bytes:
+    """Free Microsoft Edge neural TTS -> MP3 bytes."""
+    communicate = edge_tts.Communicate(text, voice or get_tts_voice(), rate=TTS_RATE)
+    audio = bytearray()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio.extend(chunk["data"])
+    return bytes(audio)
+
+
+@app.post("/api/tts")
+async def tts(req: TTSRequest, request: Request) -> Response:
+    """Return spoken MP3 for the text. Quality-ordered fallback chain:
+    ElevenLabs (paid, best quality, self-serve connect) -> Grok (XAI_API_KEY
+    env var) -> free Edge TTS. Each stage falls through to the next on any
+    failure rather than going silent. Voice is resolved per-user so a second
+    account can have its own preferred voice."""
+    username = _get_session_username(request)
+    text = req.text.strip()[:3000]
+    if not text:
+        return Response(status_code=400)
+    if voice_eleven.is_configured():
+        try:
+            data = await voice_eleven.synthesize(text)
+            return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": "elevenlabs"})
+        except Exception as e:
+            print(f"[tts] ElevenLabs failed, trying next engine: {type(e).__name__}: {e}", flush=True)
+    if XAI_API_KEY:
+        try:
+            data = await _grok_tts(text)
+            return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": "grok"})
+        except Exception as e:
+            # Fall back to the free voice rather than going silent, but log why.
+            print(f"[tts] Grok TTS failed, using Edge fallback: {type(e).__name__}: {e}", flush=True)
+            voice = get_user_tts_voice(username)
+            data = await _edge_tts(text, voice)
+            return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": "edge-fallback"})
+    voice = get_user_tts_voice(username)
+    return Response(await _edge_tts(text, voice), media_type="audio/mpeg", headers={"X-TTS-Engine": "edge"})
 
 
 @app.get("/api/leads")
@@ -3579,12 +4021,9 @@ def health_check() -> JSONResponse:
             "calendar": integrations.get("calendar", False),
             "social_zapier": social.is_configured(),
             "elevenlabs": voice_eleven.is_configured(),
-            "lightspeed": integrations.get("lightspeed", False),
             "stripe": integrations.get("stripe", False),
             "hubspot": integrations.get("hubspot", False),
-            "buildertrend": integrations.get("buildertrend", False),
             "twilio": integrations.get("twilio", False),
-            "docusign": integrations.get("docusign", False),
             "xai_media_gen": media_gen.is_configured(),
             "push_notifications": push.is_configured(),
         },
@@ -3716,27 +4155,12 @@ def proposal_page() -> FileResponse:
 
 # ── BUILDERTREND WEBHOOK ──────────────────────────────────────────────────────
 
-_BT_WEBHOOK_SECRET = os.environ.get("BUILDERTREND_WEBHOOK_SECRET", "")
 
 
-@app.post("/api/webhooks/buildertrend")
-async def buildertrend_webhook(request: Request) -> JSONResponse:
-    """
-    Receives Buildertrend milestone/document events and reacts:
-    sends client SMS at each milestone, updates HubSpot on signing.
-    Configure in Buildertrend: Settings → Webhooks → URL = <this-domain>/api/webhooks/buildertrend?token=<BUILDERTREND_WEBHOOK_SECRET>
-    """
-    if not _BT_WEBHOOK_SECRET:
-        return JSONResponse({"ok": False, "detail": "BUILDERTREND_WEBHOOK_SECRET not configured"}, status_code=503)
-    token = request.query_params.get("token", "")
-    if not secrets.compare_digest(token, _BT_WEBHOOK_SECRET):
-        return JSONResponse({"ok": False}, status_code=401)
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "detail": "Invalid JSON"}, status_code=400)
-    result = buildertrend.handle_webhook(payload)
-    return JSONResponse({"ok": True, "detail": result})
+# The Buildertrend webhook route that used to live here is gone: no
+# buildertrend module exists in this repo (never ported from the Louden
+# build), so the moment its secret was configured, every delivered event
+# 500'd on a NameError. None of Susan's four businesses use Buildertrend.
 
 
 # ── HUBSPOT LEAD CAPTURE (direct API shortcut) ────────────────────────────────
@@ -3797,64 +4221,224 @@ def dev_ticket(req: DevTicketRequest) -> JSONResponse:
         result="Logged"
     )
 
-    if approval_level == "manual":
-        # Just log and notify, don't execute
-        return JSONResponse({"ok": True, "ticket_id": ticket_id, "status": "logged",
-                           "detail": "Ticket logged. Review and execute in Claude Code."})
+    # Every level now logs-and-notifies only. The old low_risk/full_auto
+    # branch called the bare Anthropic API with NO tools, no filesystem, no
+    # repo -- Claude cannot execute anything that way -- then wrote whatever
+    # JSON the model invented ("success": true, "changed_files": [...]) into
+    # the Dev Agent Log as if the work had happened. A log of changes that
+    # never happened is the "green suite worse than red" failure class.
+    # Real autonomous execution needs an agent harness, not messages.create.
+    return JSONResponse({"ok": True, "ticket_id": ticket_id, "status": "logged",
+                        "detail": "Ticket logged. Review and execute in Claude Code."})
 
-    # For low_risk or full_auto, invoke Claude (background thread so webhook returns fast)
-    def _execute_ticket():
-        try:
-            approval_prompt = {
-                "low_risk": "Execute only if low-risk (code formatting, docs, non-destructive). Refuse high-risk changes.",
-                "full_auto": "Execute. Always flag what you did and recommend a human double-check."
-            }.get(approval_level, "Execute only if low-risk.")
 
-            system_prompt = f"""You are an autonomous code/ops agent. Execute the build request below.
+# Restored after being dropped in the multi-company port: chat mints
+# /artifact/{slug} links for every proposal/audit/content doc (and the
+# Artifacts panel offers Open/Copy Link), but no route served them -- every
+# link, including ones copied to clients, 404'd. crm.get_artifact existed
+# with zero callers. Ported from the flagship, rebranded.
+@app.get("/artifact/{slug}", response_class=HTMLResponse)
+def artifact_page(slug: str) -> HTMLResponse:
+    """Gate-exempt. Renders a document Annabelle generated (proposal, audit,
+    long-form content) as a plain readable page -- the link the Artifacts
+    panel gives you to copy/share."""
+    art = crm.get_artifact(slug)
+    if not art:
+        return HTMLResponse("<h1>Not found</h1><p>This link is invalid or has expired.</p>", status_code=404)
+    import html as _html
+    title = _html.escape(art.get("title", "Document"))
+    # Same title, safely embeddable in the read-aloud script below.
+    title_js = json.dumps(art.get("title", "Document"))
+    raw = art.get("content", "") or ""
+    try:
+        import markdown as _md
+        import bleach as _bleach
+        html_body = _md.markdown(raw, extensions=["extra", "sane_lists", "nl2br"])
+        allowed_tags = ["p", "br", "hr", "strong", "em", "b", "i", "u", "s",
+                        "h1", "h2", "h3", "h4", "h5", "h6",
+                        "ul", "ol", "li", "blockquote", "pre", "code",
+                        "a", "img", "table", "thead", "tbody", "tr", "th", "td",
+                        "div", "span"]
+        allowed_attrs = {"a": ["href", "title", "target", "rel"],
+                         "img": ["src", "alt", "title", "width", "height"],
+                         "*": ["class"]}
+        body_html = _bleach.clean(html_body, tags=allowed_tags, attributes=allowed_attrs,
+                                  protocols=["http", "https", "mailto", "data"], strip=True)
+    except Exception:
+        body_html = f"<pre>{_html.escape(raw)}</pre>"
+    page = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — The Dreamerie</title>
+<style>
+body {{ margin:0; padding:40px 20px; background:#0d0d10; color:#e6e2d6; font-family:Inter,-apple-system,sans-serif; line-height:1.6; }}
+.doc {{ max-width:760px; margin:0 auto; background:rgba(20,19,16,0.92); border:1px solid rgba(196,150,230,0.25); border-radius:14px; padding:36px 44px; }}
+.doc h1.doc-title {{ font-size:22px; letter-spacing:0.04em; color:#e0b8f0; margin:0 0 24px; padding-bottom:14px; border-bottom:1px solid rgba(196,150,230,0.2); }}
+.doc h1, .doc h2, .doc h3 {{ color:#e0b8f0; margin:22px 0 10px; line-height:1.3; }}
+.doc h1 {{ font-size:20px; }} .doc h2 {{ font-size:17px; }} .doc h3 {{ font-size:15px; }}
+.doc p, .doc li {{ font-size:15px; }}
+.doc ul, .doc ol {{ padding-left:22px; margin:10px 0; }}
+.doc a {{ color:#e0b8f0; }}
+.doc img {{ max-width:100%; height:auto; border-radius:8px; margin:10px 0; }}
+.doc pre, .doc code {{ background:rgba(0,0,0,0.35); border-radius:6px; padding:2px 6px; font-family:ui-monospace,Menlo,monospace; font-size:13px; }}
+.doc pre {{ padding:14px; white-space:pre-wrap; word-break:break-word; }}
+.doc table {{ border-collapse:collapse; width:100%; margin:12px 0; }}
+.doc th, .doc td {{ border:1px solid rgba(196,150,230,0.2); padding:8px 10px; text-align:left; font-size:14px; }}
+.doc th {{ background:rgba(196,150,230,0.08); color:#e0b8f0; }}
+.doc blockquote {{ border-left:3px solid rgba(196,150,230,0.4); padding-left:14px; margin:12px 0; color:#c8c4b8; }}
 
-Approval level: {approval_level}
-{approval_prompt}
+/* Toolbar: read-aloud + save-as-PDF. Hidden when printing. */
+.doc-tools {{ display:flex; flex-wrap:wrap; gap:10px; margin:0 0 22px; }}
+.doc-tools button {{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:9px;
+  cursor:pointer; border:1px solid rgba(196,150,230,0.4); background:rgba(196,150,230,0.1); color:#e0b8f0; }}
+.doc-tools button:hover {{ background:rgba(196,150,230,0.2); }}
+.doc-tools button[disabled] {{ opacity:0.4; cursor:default; }}
+.doc-tools .primary {{ background:linear-gradient(135deg,#8a4fb0,#b87ad9); border:none; color:#0a0a0c; }}
+#readStatus {{ align-self:center; font-size:12px; color:#9a9486; }}
 
-After execution, return a JSON object: {{"success": true/false, "action": "...", "details": "...", "changed_files": [...], "error": ""}}"""
+/* Print / Save-as-PDF: drop the dark theme for a clean white document. */
+@media print {{
+  @page {{ margin:18mm 16mm; }}
+  body {{ background:#fff; color:#111; padding:0; }}
+  .doc {{ background:#fff; border:none; border-radius:0; padding:0; max-width:none; }}
+  .doc-tools {{ display:none !important; }}
+  .doc h1.doc-title {{ color:#111; border-bottom:2px solid #b87ad9; font-size:24px; }}
+  .doc h1, .doc h2, .doc h3 {{ color:#111; page-break-after:avoid; }}
+  .doc a {{ color:#111; text-decoration:underline; }}
+  .doc pre, .doc code {{ background:#f1eaf5; color:#111; }}
+  .doc th {{ background:#f1eaf5; color:#111; }}
+  .doc th, .doc td {{ border:1px solid #bbb; }}
+  .doc blockquote {{ border-left:3px solid #b87ad9; color:#333; }}
+  .doc table, .doc pre, .doc blockquote, .doc img {{ page-break-inside:avoid; }}
+}}
+</style></head>
+<body><div class="doc">
+<h1 class="doc-title">{title}</h1>
+<div class="doc-tools">
+  <button type="button" id="readBtn">&#128266; Read Aloud</button>
+  <button type="button" id="stopBtn" disabled>&#9632; Stop</button>
+  <button type="button" class="primary" id="pdfBtn">&#128196; Save as PDF</button>
+  <span id="readStatus"></span>
+</div>
+<div id="docBody">{body_html}</div>
+</div>
+<script>
+(function () {{
+  var readBtn = document.getElementById('readBtn');
+  var stopBtn = document.getElementById('stopBtn');
+  var statusEl = document.getElementById('readStatus');
 
-            client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            response = client.messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-5"),
-                max_tokens=2000,
-                system=system_prompt,
-                messages=[{"role": "user", "content": req.request}],
-                timeout=60,
-            )
+  document.getElementById('pdfBtn').addEventListener('click', function () {{
+    // The browser's own print-to-PDF: perfect fidelity (fonts, tables, images,
+    // unicode) with no server-side renderer to keep alive. The @media print
+    // block above turns the dark page into a clean white document first.
+    window.print();
+  }});
 
-            result_text = response.content[0].text if response.content else ""
-            try:
-                result_json = json.loads(result_text)
-            except:
-                result_json = {"success": False, "error": f"Could not parse response: {result_text[:500]}"}
+  // ---- Read aloud -------------------------------------------------------
+  // Split the rendered text into sentence-bounded chunks: /api/tts caps at
+  // 3000 chars, and chunking is also what makes pause/stop feel instant
+  // instead of waiting on one giant audio file.
+  var CHUNK_MAX = 1200;
+  function buildChunks() {{
+    var raw = (document.getElementById('docBody').innerText || '').replace(/\\s+/g, ' ').trim();
+    var full = {title_js} + '. ' + raw;
+    var sentences = full.match(/[^.!?]+[.!?]*\\s*/g) || [full];
+    var out = [], cur = '';
+    sentences.forEach(function (s) {{
+      if ((cur + s).length > CHUNK_MAX && cur) {{ out.push(cur.trim()); cur = ''; }}
+      // A single sentence longer than the cap still has to go somewhere; the
+      // endpoint truncates at 3000, so hard-split anything bigger than that.
+      while (s.length > 2800) {{ out.push(s.slice(0, 2800)); s = s.slice(2800); }}
+      cur += s;
+    }});
+    if (cur.trim()) out.push(cur.trim());
+    return out.filter(Boolean);
+  }}
 
-            crm.save_dev_agent_log(
-                ticket_id=ticket_id,
-                action=req.request[:500],
-                approval_level=approval_level,
-                result=result_json.get("details", "")[:10000],
-                changed_files=result_json.get("changed_files", []),
-                error=result_json.get("error", "")
-            )
-        except Exception as e:
-            log.error(f"dev_ticket execution failed: {e}")
-            crm.save_dev_agent_log(
-                ticket_id=ticket_id,
-                action=req.request[:500],
-                approval_level=approval_level,
-                error=str(e)[:5000]
-            )
+  var chunks = [], idx = 0, audio = null, playing = false, paused = false, useBrowserVoice = false;
 
-    if approval_level in ("low_risk", "full_auto"):
-        threading.Thread(target=_execute_ticket, daemon=True).start()
-        return JSONResponse({"ok": True, "ticket_id": ticket_id, "status": "queued",
-                           "detail": f"Ticket queued for {approval_level} execution. Check Dev Agent Log in Airtable."})
+  function setUi(state) {{
+    readBtn.innerHTML = state === 'playing' ? '&#10074;&#10074; Pause'
+                      : state === 'paused' ? '&#9654; Resume'
+                      : '&#128266; Read Aloud';
+    stopBtn.disabled = state === 'idle';
+    statusEl.textContent = state === 'idle' ? ''
+      : 'Section ' + Math.min(idx + 1, chunks.length) + ' of ' + chunks.length;
+  }}
 
-    return JSONResponse({"ok": False, "detail": "Invalid approval level"}, status_code=400)
+  function stopAll() {{
+    playing = false; paused = false; idx = 0;
+    if (audio) {{ audio.pause(); audio = null; }}
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    setUi('idle');
+  }}
+
+  // Fallback for anyone reading a shared link: /api/tts sits behind the login
+  // gate, so a client opening this document gets a 401. The browser's built-in
+  // voice keeps read-aloud working for them instead of failing silently.
+  function speakInBrowser() {{
+    if (!window.speechSynthesis) {{ statusEl.textContent = 'Read aloud is not supported in this browser.'; return; }}
+    useBrowserVoice = true;
+    window.speechSynthesis.cancel();
+    var next = function () {{
+      if (!playing || idx >= chunks.length) {{ stopAll(); return; }}
+      var u = new SpeechSynthesisUtterance(chunks[idx]);
+      u.rate = 1.0;
+      u.onend = function () {{ if (playing) {{ idx++; setUi('playing'); next(); }} }};
+      window.speechSynthesis.speak(u);
+    }};
+    setUi('playing');
+    next();
+  }}
+
+  function playChunk() {{
+    if (!playing || idx >= chunks.length) {{ if (playing) stopAll(); return; }}
+    setUi('playing');
+    fetch('/api/tts', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ text: chunks[idx] }})
+    }}).then(function (r) {{
+      if (!r.ok) throw new Error('tts ' + r.status);
+      return r.blob();
+    }}).then(function (blob) {{
+      if (!playing) return;
+      audio = new Audio(URL.createObjectURL(blob));
+      audio.onended = function () {{ if (playing) {{ idx++; playChunk(); }} }};
+      audio.onerror = function () {{ if (playing) {{ idx++; playChunk(); }} }};
+      audio.play();
+    }}).catch(function () {{
+      if (playing) speakInBrowser();
+    }});
+  }}
+
+  readBtn.addEventListener('click', function () {{
+    if (!playing) {{
+      chunks = buildChunks();
+      if (!chunks.length) {{ statusEl.textContent = 'Nothing to read.'; return; }}
+      playing = true; paused = false; idx = 0; useBrowserVoice = false;
+      playChunk();
+      return;
+    }}
+    if (paused) {{  // resume
+      paused = false;
+      if (useBrowserVoice) window.speechSynthesis.resume();
+      else if (audio) audio.play();
+      setUi('playing');
+    }} else {{      // pause
+      paused = true;
+      if (useBrowserVoice) window.speechSynthesis.pause();
+      else if (audio) audio.pause();
+      setUi('paused');
+    }}
+  }});
+
+  stopBtn.addEventListener('click', stopAll);
+  window.addEventListener('beforeprint', function () {{ if (playing) stopAll(); }});
+}})();
+</script>
+</body></html>"""
+    return HTMLResponse(page)
 
 
 # Serve the frontend

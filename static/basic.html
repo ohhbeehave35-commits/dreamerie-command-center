@@ -139,6 +139,14 @@
       <span id="accessCodeMsg" class="msgline"></span>
     </div>
 
+    <div class="card" id="passkeyCard">
+      <h3>Fingerprint / Face ID</h3>
+      <div class="hint">Sign in with your fingerprint or face instead of typing the code. Your access code always keeps working.</div>
+      <button id="addPasskeyBtn" class="savebtn">Add this device</button>
+      <span id="passkeyMsg" class="msgline"></span>
+      <div id="passkeyList" style="display:flex;flex-direction:column;gap:8px;margin-top:10px"></div>
+    </div>
+
     <div class="card">
       <h3>Voice</h3>
       <select id="voiceSelect" class="field"></select>
@@ -399,8 +407,10 @@ document.getElementById('saveCapsBtn').addEventListener('click', () => {
       public_chat_cap: document.getElementById('publicCapInput').value,
       owner_chat_cap: document.getElementById('ownerCapInput').value,
     }),
-  }).then(r => r.json()).then(() => { msg.textContent = 'Saved.'; renderSettings(); })
-    .catch(() => { msg.textContent = "Couldn't save — try again."; });
+  }).then(r => r.json()).then(d => {
+    if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
+    msg.textContent = 'Saved.'; renderSettings();
+  }).catch(() => { msg.textContent = "Couldn't save — try again."; });
 });
 document.getElementById('saveAccessCodeBtn').addEventListener('click', () => {
   const msg = document.getElementById('accessCodeMsg');
@@ -410,12 +420,81 @@ document.getElementById('saveAccessCodeBtn').addEventListener('click', () => {
   fetch('/api/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ access_code: val }),
-  }).then(() => {
+  }).then(r => r.json()).then(d => {
+    // A 502 here means the write never landed. Claiming "Changed" for a code
+    // change that didn't persist would strand every device on the WRONG code.
+    if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
     document.getElementById('newAccessCode').value = '';
     msg.textContent = 'Changed — other devices logged out.';
     renderSettings();
   }).catch(() => { msg.textContent = "Couldn't save — try again."; });
 });
+
+// ---------- Fingerprint / Face ID enrollment ----------
+(function () {
+  const card = document.getElementById('passkeyCard');
+  if (!window.PublicKeyCredential) {
+    card.querySelector('.hint').textContent = 'Not supported in this browser — the access code is your sign-in.';
+    document.getElementById('addPasskeyBtn').style.display = 'none';
+    return;
+  }
+  const pkB64 = {
+    dec: s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+    enc: b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  };
+  const msg = document.getElementById('passkeyMsg');
+  function renderPasskeys() {
+    fetch('/api/passkey/credentials').then(r => r.json()).then(d => {
+      const list = document.getElementById('passkeyList');
+      if (!d.ok || !d.credentials || !d.credentials.length) {
+        list.innerHTML = '<div class="hint">No devices enrolled yet.</div>'; return;
+      }
+      list.innerHTML = '';
+      d.credentials.forEach(c => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px';
+        const added = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
+        row.innerHTML = '<span>' + (c.label || 'Device') + (added ? ' <span style="color:#6B6A63">· added ' + added + '</span>' : '') + '</span>';
+        const del = document.createElement('button');
+        del.className = 'savebtn'; del.textContent = 'Remove';
+        del.addEventListener('click', () => {
+          if (!confirm('Remove this device\'s fingerprint sign-in? Your access code keeps working.')) return;
+          fetch('/api/passkey/credentials/' + encodeURIComponent(c.id), { method: 'DELETE' })
+            .then(() => renderPasskeys()).catch(() => {});
+        });
+        row.appendChild(del);
+        list.appendChild(row);
+      });
+    }).catch(() => {});
+  }
+  document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
+    msg.textContent = 'Follow your device\'s prompt…';
+    try {
+      const o = await fetch('/api/passkey/register-options', { method: 'POST' }).then(r => r.json());
+      if (!o.options) { msg.textContent = o.detail || 'Couldn\'t start setup.'; return; }
+      const pub = o.options;
+      pub.challenge = pkB64.dec(pub.challenge);
+      pub.user.id = pkB64.dec(pub.user.id);
+      (pub.excludeCredentials || []).forEach(c => c.id = pkB64.dec(c.id));
+      const cred = await navigator.credentials.create({ publicKey: pub });
+      const label = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'This device')
+        + ' · ' + new Date().toLocaleDateString();
+      const body = { state: o.state, label: label, credential: {
+        id: cred.id, rawId: pkB64.enc(cred.rawId), type: cred.type,
+        response: { clientDataJSON: pkB64.enc(cred.response.clientDataJSON),
+                    attestationObject: pkB64.enc(cred.response.attestationObject),
+                    transports: cred.response.getTransports ? cred.response.getTransports() : [] } } };
+      const r = await fetch('/api/passkey/register', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) { msg.textContent = 'Added — next sign-in can use your fingerprint.'; renderPasskeys(); }
+      else { msg.textContent = d.detail || 'Couldn\'t add this device.'; }
+    } catch (e) {
+      msg.textContent = 'Cancelled — nothing was changed.';
+    }
+  });
+  renderPasskeys();
+})();
 document.getElementById('saveVoiceBtn').addEventListener('click', () => {
   const msg = document.getElementById('voiceMsg');
   msg.textContent = 'Saving…';

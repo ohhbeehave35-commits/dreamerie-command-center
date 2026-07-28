@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your Proposal — Powered by Annabelle</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --brand: #b87ad9;
+  --brand-light: #e0b8f0;
+  --bg: #07060a;
+  --surface: #0e0c09;
+  --border: rgba(196,150,230,0.18);
+  --text: #e6e2d6;
+  --muted: #9aa0aa;
+  --dim: #6f6e66;
+  --green: #7bc87b;
+  --red: #e0735a;
+}
+html, body { min-height: 100vh; background: var(--bg); color: var(--text); font-family: -apple-system, 'Inter', sans-serif; }
+.page { max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; }
+
+/* header */
+.header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 40px; flex-wrap: wrap; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon { width: 40px; height: 40px; background: rgba(196,150,230,0.1); border: 1px solid var(--border); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.brand-name { font-size: 13px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--brand); }
+.brand-tag { font-size: 11px; color: var(--dim); }
+.status-pill { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 20px; border: 1px solid; }
+.status-pending { color: var(--brand); border-color: rgba(196,150,230,0.3); background: rgba(196,150,230,0.08); }
+.status-signed { color: var(--green); border-color: rgba(123,200,123,0.3); background: rgba(123,200,123,0.08); }
+
+/* hero */
+.hero { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 32px; margin-bottom: 28px; }
+.hero-to { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+.hero-name { font-size: 26px; font-weight: 800; color: var(--text); letter-spacing: -0.01em; margin-bottom: 4px; }
+.hero-sub { font-size: 14px; color: var(--muted); }
+.hero-meta { display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap; }
+.hero-meta-item { }
+.hero-meta-label { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin-bottom: 3px; }
+.hero-meta-val { font-size: 13px; font-weight: 600; color: var(--text); }
+
+/* section */
+.section { margin-bottom: 24px; }
+.section-label { font-size: 10px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(196,150,230,0.55); margin-bottom: 12px; }
+
+/* line items */
+.line-items { background: var(--surface); border: 1px solid rgba(200,204,210,0.08); border-radius: 12px; overflow: hidden; }
+.li-header { display: grid; grid-template-columns: 1fr auto auto auto; gap: 16px; padding: 10px 18px; background: rgba(14,12,9,0.9); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); border-bottom: 1px solid rgba(200,204,210,0.08); }
+.li-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 16px; padding: 13px 18px; border-bottom: 1px solid rgba(200,204,210,0.05); align-items: start; }
+.li-row:last-child { border-bottom: none; }
+.li-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.li-desc { font-size: 12px; color: var(--dim); margin-top: 2px; line-height: 1.4; }
+.li-num { font-size: 13px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.li-num.total { color: var(--text); font-weight: 700; }
+
+/* totals */
+.totals { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.total-row { display: flex; justify-content: space-between; align-items: center; }
+.total-label { font-size: 13px; color: var(--muted); }
+.total-val { font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; }
+.total-row.grand .total-label { font-size: 15px; font-weight: 700; color: var(--text); }
+.total-row.grand .total-val { font-size: 20px; font-weight: 800; color: var(--brand); }
+.divider { height: 1px; background: rgba(200,204,210,0.08); margin: 4px 0; }
+
+/* scope */
+.scope-list { background: var(--surface); border: 1px solid rgba(200,204,210,0.08); border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.scope-item { display: flex; gap: 10px; font-size: 13px; color: var(--muted); }
+.scope-item::before { content: "✓"; color: var(--green); font-weight: 700; flex: none; }
+.scope-item.excl::before { content: "✗"; color: var(--dim); }
+.scope-item.excl { color: var(--dim); }
+
+/* timeline */
+.timeline { display: flex; flex-direction: column; gap: 0; }
+.tl-row { display: flex; gap: 16px; }
+.tl-left { display: flex; flex-direction: column; align-items: center; flex: none; width: 32px; }
+.tl-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--brand); border: 2px solid var(--bg); flex: none; margin-top: 4px; }
+.tl-dot.dim { background: var(--dim); }
+.tl-line { width: 1px; flex: 1; background: rgba(196,150,230,0.15); min-height: 20px; }
+.tl-content { padding-bottom: 20px; flex: 1; }
+.tl-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.tl-date { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+/* notes */
+.notes { background: rgba(196,150,230,0.04); border: 1px solid rgba(196,150,230,0.15); border-radius: 12px; padding: 16px 18px; font-size: 13px; color: var(--muted); line-height: 1.7; }
+
+/* CTA */
+.cta { background: rgba(14,12,9,0.9); border: 1px solid var(--border); border-radius: 16px; padding: 28px; text-align: center; margin-top: 32px; }
+.cta-title { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.cta-sub { font-size: 13px; color: var(--muted); margin-bottom: 24px; line-height: 1.6; }
+.btn-sign { display: inline-block; background: var(--brand); color: #07060a; font-size: 14px; font-weight: 800; letter-spacing: 0.04em; padding: 14px 40px; border-radius: 10px; cursor: pointer; border: none; margin-bottom: 12px; width: 100%; max-width: 360px; transition: opacity 0.2s; }
+.btn-sign:hover { opacity: 0.88; }
+.btn-sign:disabled { opacity: 0.4; cursor: default; }
+.btn-secondary { display: inline-block; background: transparent; color: var(--muted); font-size: 13px; padding: 10px 24px; border-radius: 8px; cursor: pointer; border: 1px solid rgba(200,204,210,0.12); width: 100%; max-width: 360px; transition: border-color 0.2s; margin-top: 8px; }
+.btn-secondary:hover { border-color: rgba(200,204,210,0.25); }
+.cta-legal { font-size: 11px; color: var(--dim); margin-top: 16px; line-height: 1.6; }
+
+/* signed state */
+.signed-banner { background: rgba(123,200,123,0.08); border: 1px solid rgba(123,200,123,0.25); border-radius: 12px; padding: 20px; text-align: center; display: none; }
+.signed-banner.show { display: block; }
+.signed-icon { font-size: 32px; margin-bottom: 8px; }
+.signed-title { font-size: 17px; font-weight: 700; color: var(--green); margin-bottom: 6px; }
+.signed-sub { font-size: 13px; color: var(--muted); }
+
+/* modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; padding: 24px; }
+.modal-overlay.open { display: flex; }
+.modal { background: #0e0c09; border: 1px solid var(--border); border-radius: 16px; padding: 32px; max-width: 480px; width: 100%; }
+.modal-title { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.modal-sub { font-size: 13px; color: var(--muted); margin-bottom: 24px; }
+.field { margin-bottom: 16px; }
+.field label { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); display: block; margin-bottom: 6px; }
+.field input { width: 100%; background: rgba(14,12,9,0.9); border: 1px solid rgba(200,204,210,0.15); border-radius: 8px; padding: 10px 14px; font-size: 14px; color: var(--text); outline: none; transition: border-color 0.2s; }
+.field input:focus { border-color: rgba(196,150,230,0.4); }
+.sig-box { width: 100%; height: 100px; background: rgba(14,12,9,0.9); border: 1px solid rgba(200,204,210,0.15); border-radius: 8px; position: relative; cursor: crosshair; margin-bottom: 4px; touch-action: none; }
+.sig-hint { font-size: 11px; color: var(--dim); margin-bottom: 12px; }
+.sig-clear { font-size: 11px; color: var(--muted); cursor: pointer; text-decoration: underline; }
+.modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+.modal-btn-primary { flex: 1; background: var(--brand); color: #07060a; font-size: 14px; font-weight: 700; padding: 12px; border-radius: 8px; border: none; cursor: pointer; }
+.modal-btn-secondary { padding: 12px 18px; background: transparent; color: var(--muted); font-size: 14px; border: 1px solid rgba(200,204,210,0.12); border-radius: 8px; cursor: pointer; }
+.annabelle-note { margin-top: 24px; padding: 14px 16px; background: rgba(196,150,230,0.05); border: 1px solid rgba(196,150,230,0.12); border-radius: 10px; font-size: 12px; color: var(--dim); line-height: 1.6; }
+
+/* footer */
+.footer { margin-top: 48px; text-align: center; font-size: 11px; color: var(--dim); letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+
+<div class="page" id="proposalPage">
+
+  <div class="header">
+    <div class="brand">
+      <div class="brand-icon">🐝</div>
+      <div>
+        <div class="brand-name" id="bizName">The Dreamerie</div>
+        <div class="brand-tag">Proposal · Powered by Annabelle</div>
+      </div>
+    </div>
+    <div class="status-pill status-pending" id="statusPill">⏳ Awaiting Signature</div>
+  </div>
+
+  <div class="hero">
+    <div class="hero-to">Prepared for</div>
+    <div class="hero-name" id="clientName">Loading...</div>
+    <div class="hero-sub" id="projectTitle">Loading project details...</div>
+    <div class="hero-meta">
+      <div class="hero-meta-item">
+        <div class="hero-meta-label">Proposal Date</div>
+        <div class="hero-meta-val" id="proposalDate">—</div>
+      </div>
+      <div class="hero-meta-item">
+        <div class="hero-meta-label">Valid Until</div>
+        <div class="hero-meta-val" id="validUntil">—</div>
+      </div>
+      <div class="hero-meta-item">
+        <div class="hero-meta-label">Proposal #</div>
+        <div class="hero-meta-val" id="proposalNum">—</div>
+      </div>
+      <div class="hero-meta-item">
+        <div class="hero-meta-label">Prepared by</div>
+        <div class="hero-meta-val" id="preparedBy">Annabelle</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Line Items</div>
+    <div class="line-items">
+      <div class="li-header">
+        <span>Description</span>
+        <span>Qty</span>
+        <span>Unit</span>
+        <span>Total</span>
+      </div>
+      <div id="lineItemsBody"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Totals</div>
+    <div class="totals" id="totalsBlock"></div>
+  </div>
+
+  <div class="section" id="scopeSection">
+    <div class="section-label">Scope of Work</div>
+    <div class="scope-list" id="scopeList"></div>
+  </div>
+
+  <div class="section" id="timelineSection">
+    <div class="section-label">Estimated Timeline</div>
+    <div class="timeline" id="timelineList"></div>
+  </div>
+
+  <div class="section" id="notesSection" style="display:none">
+    <div class="section-label">Notes from Annabelle</div>
+    <div class="notes" id="notesText"></div>
+  </div>
+
+  <div id="signedBanner" class="signed-banner">
+    <div class="signed-icon">✅</div>
+    <div class="signed-title">Proposal Accepted</div>
+    <div class="signed-sub" id="signedBy">Signed by — · —</div>
+  </div>
+
+  <div class="cta" id="ctaBlock">
+    <div class="cta-title">Ready to move forward?</div>
+    <div class="cta-sub">By clicking "Accept & Sign" you agree to the terms outlined in this proposal. A copy will be sent to your email automatically.</div>
+    <button class="btn-sign" id="signBtn">Accept & Sign This Proposal</button><br>
+    <button class="btn-secondary" id="questionBtn">💬 I have a question</button>
+    <div class="cta-legal">This proposal is valid for 30 days from the date above. Acceptance constitutes agreement to the issuing business's service terms. AI-assisted documents are reviewed and approved by a licensed professional before delivery.</div>
+  </div>
+
+  <div class="annabelle-note">
+    🐝 <strong style="color:var(--brand)">A note from Annabelle:</strong> This proposal was prepared based on the information gathered during your consultation. If anything looks off or you have questions, reply to your confirmation email or text the number you called — I'll get you to the right person right away.
+  </div>
+
+  <div class="footer">The Dreamerie · Queens, NY<br>This document was generated by Annabelle, an AI assistant. Final approval by a licensed human professional.</div>
+</div>
+
+<!-- Sign modal -->
+<div class="modal-overlay" id="signModal">
+  <div class="modal">
+    <div class="modal-title">Accept this Proposal</div>
+    <div class="modal-sub">Please confirm your information and provide your signature below.</div>
+    <div class="field">
+      <label>Full Name</label>
+      <input type="text" id="sigName" placeholder="Your full legal name" />
+    </div>
+    <div class="field">
+      <label>Email Address</label>
+      <input type="email" id="sigEmail" placeholder="you@email.com" />
+    </div>
+    <div class="field">
+      <label>Signature <span class="sig-clear" id="clearSig">Clear</span></label>
+      <canvas class="sig-box" id="sigCanvas" width="432" height="100"></canvas>
+      <div class="sig-hint">Draw your signature above with your mouse or finger</div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn-secondary" id="cancelModal">Cancel</button>
+      <button class="modal-btn-primary" id="confirmSign">Confirm & Sign</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── PROPOSAL DATA ──────────────────────────────────────────────────────────
+// Reads from ?data=<base64-encoded-json> in the URL, or uses demo data
+
+function _esc(s) { const d = document.createElement('div'); d.textContent = String(s || ''); return d.innerHTML; }
+function _sanitizeProposal(obj) {
+  if (Array.isArray(obj)) return obj.map(_sanitizeProposal);
+  if (obj && typeof obj === 'object') { const o = {}; for (const k of Object.keys(obj)) o[k] = _sanitizeProposal(obj[k]); return o; }
+  if (typeof obj === 'string') return _esc(obj);
+  return obj;
+}
+function loadProposal() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('data')) {
+    try { return _sanitizeProposal(JSON.parse(atob(params.get('data')))); } catch(e) {}
+  }
+  // Demo / fallback data
+  return {
+    bizName: "Louden Bonded Pools",
+    clientName: "Maria & Carlos Rodriguez",
+    projectTitle: "Heated Saltwater Pool — 21×34 — Palm City, FL",
+    proposalDate: "July 23, 2026",
+    validUntil: "August 22, 2026",
+    proposalNum: "LBP-2026-0047",
+    preparedBy: "Annabelle (Louden Bonded Pools AI)",
+    lineItems: [
+      { name: "Pool Shell & Excavation", desc: "21×34 gunite shell, deep end 6ft, includes Sun Shelf 6×8", qty: 1, unit: "$48,000", total: "$48,000" },
+      { name: "Deck — Travertine", desc: "380 sq ft premium travertine, Pattern A layout", qty: 380, unit: "$28/sqft", total: "$10,640" },
+      { name: "Raised Spa (6-person)", desc: "Attached spa with spillover, 104°F rated heater", qty: 1, unit: "$12,500", total: "$12,500" },
+      { name: "Salt Chlorination System", desc: "Hayward Aqua Rite Pro + cell", qty: 1, unit: "$1,800", total: "$1,800" },
+      { name: "LED Package", desc: "Pentair ColorLogic 5 in pool + 2 in spa, WiFi color control", qty: 3, unit: "$680", total: "$2,040" },
+      { name: "Automation System", desc: "Pentair IntelliCenter — remote control of all systems via app", qty: 1, unit: "$2,200", total: "$2,200" },
+      { name: "Coping — Travertine", desc: "Bullnose travertine coping, linear footage per drawings", qty: 110, unit: "$38/lf", total: "$4,180" },
+      { name: "Permitting & Engineering", desc: "St. Lucie County permit, engineer stamp, inspections", qty: 1, unit: "$2,400", total: "$2,400" },
+    ],
+    subtotal: "$83,760",
+    tax: "$0 (FL pool construction exempt)",
+    depositDue: "$41,880",
+    total: "$83,760",
+    scope: [
+      "Full excavation, gunite shell, and finish coat (Diamond Brite Tahoe Blue)",
+      "All plumbing, electrical, and equipment installation",
+      "Pool deck construction and travertine installation",
+      "Sun shelf with 2 bubblers",
+      "Raised spa with spillover waterfall",
+      "LED lighting package with app control",
+      "Salt system and automation installation",
+      "St. Lucie County permit filing and all inspections",
+      "Final startup, chemicals, and owner orientation",
+    ],
+    excludes: [
+      "Landscaping, sod, or irrigation changes",
+      "Screen enclosure (can quote separately)",
+      "Water feature additions beyond spillover",
+    ],
+    timeline: [
+      { title: "Permit submission", date: "Week of Aug 4, 2026" },
+      { title: "Permit approval (est.)", date: "Week of Aug 18, 2026" },
+      { title: "Excavation & shell", date: "Weeks 1–2 after permit" },
+      { title: "Plumbing, electrical, equipment", date: "Weeks 3–4" },
+      { title: "Decking & tile", date: "Weeks 5–6" },
+      { title: "Startup & owner walkthrough", date: "Week 7" },
+    ],
+    notes: "Based on the site visit on July 21, 2026, the lot has good access for excavation equipment. The existing fence on the north side will need one panel removed temporarily — Louden will reinstall at no charge. HOA approval is the homeowner's responsibility prior to permit submission; Annabelle can help you draft your HOA submission letter if needed."
+  };
+}
+
+// ── RENDER ────────────────────────────────────────────────────────────────
+const p = loadProposal();
+
+document.getElementById('bizName').textContent       = p.bizName || 'The Dreamerie';
+document.getElementById('clientName').textContent    = p.clientName || '—';
+document.getElementById('projectTitle').textContent  = p.projectTitle || '—';
+document.getElementById('proposalDate').textContent  = p.proposalDate || '—';
+document.getElementById('validUntil').textContent    = p.validUntil || '—';
+document.getElementById('proposalNum').textContent   = p.proposalNum || '—';
+document.getElementById('preparedBy').textContent    = p.preparedBy || 'Annabelle';
+
+// Line items
+const liBody = document.getElementById('lineItemsBody');
+(p.lineItems || []).forEach(item => {
+  const row = document.createElement('div');
+  row.className = 'li-row';
+  row.innerHTML = `
+    <div><div class="li-name">${item.name}</div><div class="li-desc">${item.desc || ''}</div></div>
+    <div class="li-num">${item.qty}</div>
+    <div class="li-num">${item.unit}</div>
+    <div class="li-num total">${item.total}</div>
+  `;
+  liBody.appendChild(row);
+});
+
+// Totals
+const totalsEl = document.getElementById('totalsBlock');
+totalsEl.innerHTML = `
+  <div class="total-row"><span class="total-label">Subtotal</span><span class="total-val">${p.subtotal || '—'}</span></div>
+  <div class="total-row"><span class="total-label">Tax</span><span class="total-val">${p.tax || '$0'}</span></div>
+  <div class="divider"></div>
+  <div class="total-row grand"><span class="total-label">Total</span><span class="total-val">${p.total || '—'}</span></div>
+  <div class="total-row" style="margin-top:8px"><span class="total-label" style="color:var(--brand)">Deposit Due at Signing (50%)</span><span class="total-val" style="color:var(--brand)">${p.depositDue || '—'}</span></div>
+`;
+
+// Scope
+const scopeEl = document.getElementById('scopeList');
+(p.scope || []).forEach(s => {
+  const d = document.createElement('div'); d.className = 'scope-item'; d.textContent = s; scopeEl.appendChild(d);
+});
+(p.excludes || []).forEach(s => {
+  const d = document.createElement('div'); d.className = 'scope-item excl'; d.textContent = s; scopeEl.appendChild(d);
+});
+
+// Timeline
+const tlEl = document.getElementById('timelineList');
+(p.timeline || []).forEach((t, i) => {
+  const isLast = i === (p.timeline.length - 1);
+  const row = document.createElement('div');
+  row.className = 'tl-row';
+  row.innerHTML = `
+    <div class="tl-left">
+      <div class="tl-dot"></div>
+      ${!isLast ? '<div class="tl-line"></div>' : ''}
+    </div>
+    <div class="tl-content">
+      <div class="tl-title">${t.title}</div>
+      <div class="tl-date">${t.date}</div>
+    </div>
+  `;
+  tlEl.appendChild(row);
+});
+
+// Notes
+if (p.notes) {
+  document.getElementById('notesSection').style.display = '';
+  document.getElementById('notesText').textContent = p.notes;
+}
+
+// ── SIGNATURE CANVAS ─────────────────────────────────────────────────────
+const canvas = document.getElementById('sigCanvas');
+const ctx    = canvas.getContext('2d');
+let drawing = false;
+ctx.strokeStyle = '#b87ad9'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+
+function getPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return { x: src.clientX - r.left, y: src.clientY - r.top };
+}
+canvas.addEventListener('mousedown',  e => { drawing = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); });
+canvas.addEventListener('mousemove',  e => { if (!drawing) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); });
+canvas.addEventListener('mouseup',    () => drawing = false);
+canvas.addEventListener('mouseleave', () => drawing = false);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); if (!drawing) return; const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); });
+canvas.addEventListener('touchend',   () => drawing = false);
+
+document.getElementById('clearSig').addEventListener('click', () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+
+// ── MODAL ────────────────────────────────────────────────────────────────
+document.getElementById('signBtn').addEventListener('click', () => document.getElementById('signModal').classList.add('open'));
+document.getElementById('cancelModal').addEventListener('click', () => document.getElementById('signModal').classList.remove('open'));
+
+document.getElementById('questionBtn').addEventListener('click', () => {
+  alert('Text the number you called, or email us — Annabelle will route your question to the right person within minutes.');
+});
+
+document.getElementById('confirmSign').addEventListener('click', () => {
+  const name  = document.getElementById('sigName').value.trim();
+  const email = document.getElementById('sigEmail').value.trim();
+  if (!name || !email) { alert('Please enter your full name and email.'); return; }
+
+  const isEmpty = !ctx.getImageData(0, 0, canvas.width, canvas.height).data.some(v => v !== 0);
+  if (isEmpty) { alert('Please draw your signature above.'); return; }
+
+  fetch('/api/proposals/sign', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({proposal_id: proposal.proposalNum || '', name: name, email: email, signature: canvas.toDataURL()})
+  }).catch(() => {});
+  document.getElementById('signModal').classList.remove('open');
+  document.getElementById('ctaBlock').style.display = 'none';
+  const banner = document.getElementById('signedBanner');
+  banner.classList.add('show');
+  document.getElementById('signedBy').textContent = `Signed by ${name} · ${new Date().toLocaleDateString('en-US', {month:'long',day:'numeric',year:'numeric'})}`;
+  document.getElementById('statusPill').className = 'status-pill status-signed';
+  document.getElementById('statusPill').textContent = '✓ Signed';
+  banner.scrollIntoView({ behavior: 'smooth' });
+});
+</script>
+</body>
+</html>

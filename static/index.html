@@ -772,6 +772,14 @@
       <span id="accessCodeMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
     </div>
 
+    <div id="passkeyCard" style="border:1px solid rgba(var(--brand-rgb),0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
+      <div style="font-weight:600;font-size:13.5px;margin-bottom:6px">Fingerprint / Face ID</div>
+      <div class="pk-hint" style="font-size:11.5px;color:#7d7c74;margin-bottom:10px;line-height:1.5">Sign in with your fingerprint or face instead of typing the code. Your access code always keeps working.</div>
+      <button id="addPasskeyBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:rgba(var(--brand-rgb),0.25);color:var(--brand, #d4af37);border:1px solid rgba(var(--brand-rgb),0.4);border-radius:8px;cursor:pointer">Add this device</button>
+      <span id="passkeyMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
+      <div id="passkeyList" style="display:flex;flex-direction:column;gap:8px;margin-top:10px"></div>
+    </div>
+
     <div style="border:1px solid rgba(var(--brand-rgb),0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
       <div style="font-weight:600;font-size:13.5px;margin-bottom:10px">AI Model</div>
       <div style="font-size:11.5px;color:#7d7c74;margin-bottom:12px;line-height:1.5">Which model the assistant uses when the chat picker is set to Auto. You can still override any single message from the picker next to the message box.</div>
@@ -3097,12 +3105,83 @@
     fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ access_code: val }),
-    }).then(() => {
+    }).then(r => r.json()).then(d => {
+      // Claiming "Changed" for a code change that never persisted would
+      // strand every device on the WRONG code.
+      if (d.ok === false) { msg.textContent = d.detail || "Couldn't save."; return; }
       document.getElementById('newAccessCode').value = '';
       msg.textContent = 'Changed — other devices are now logged out.';
       renderSettings();
     }).catch(() => { msg.textContent = 'Couldn\'t save — try again.'; });
   });
+
+  // ---------- Fingerprint / Face ID enrollment ----------
+  (function () {
+    const card = document.getElementById('passkeyCard');
+    if (!window.PublicKeyCredential) {
+      card.querySelector('.pk-hint').textContent = 'Not supported in this browser — the access code is your sign-in.';
+      document.getElementById('addPasskeyBtn').style.display = 'none';
+      return;
+    }
+    const pkB64 = {
+      dec: s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+      enc: b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    };
+    const pkMsg = document.getElementById('passkeyMsg');
+    window.renderPasskeys = function () {
+      fetch('/api/passkey/credentials').then(r => r.json()).then(d => {
+        const list = document.getElementById('passkeyList');
+        if (!d.ok || !d.credentials || !d.credentials.length) {
+          list.innerHTML = '<div style="font-size:12px;color:#7d7c74">No devices enrolled yet.</div>'; return;
+        }
+        list.innerHTML = '';
+        d.credentials.forEach(c => {
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(20,19,16,0.5);border-radius:8px;font-size:12px';
+          const added = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
+          row.innerHTML = '<span><span style="color:var(--brand, #d4af37);font-weight:600">' + (c.label || 'Device') + '</span>'
+            + (added ? ' <span style="color:#7d7c74">· added ' + added + '</span>' : '') + '</span>';
+          const del = document.createElement('button');
+          del.textContent = 'Remove';
+          del.style.cssText = 'padding:4px 8px;font-size:11px;background:rgba(196,122,99,0.25);color:#c47a63;border:1px solid rgba(196,122,99,0.4);border-radius:4px;cursor:pointer';
+          del.addEventListener('click', () => {
+            if (!confirm('Remove this device\'s fingerprint sign-in? Your access code keeps working.')) return;
+            fetch('/api/passkey/credentials/' + encodeURIComponent(c.id), { method: 'DELETE' })
+              .then(() => window.renderPasskeys()).catch(() => {});
+          });
+          row.appendChild(del);
+          list.appendChild(row);
+        });
+      }).catch(() => {});
+    };
+    document.getElementById('addPasskeyBtn').addEventListener('click', async () => {
+      pkMsg.textContent = 'Follow your device\'s prompt…';
+      try {
+        const o = await fetch('/api/passkey/register-options', { method: 'POST' }).then(r => r.json());
+        if (!o.options) { pkMsg.textContent = o.detail || 'Couldn\'t start setup.'; return; }
+        const pub = o.options;
+        pub.challenge = pkB64.dec(pub.challenge);
+        pub.user.id = pkB64.dec(pub.user.id);
+        (pub.excludeCredentials || []).forEach(c => c.id = pkB64.dec(c.id));
+        const cred = await navigator.credentials.create({ publicKey: pub });
+        const label = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'This device')
+          + ' · ' + new Date().toLocaleDateString();
+        const body = { state: o.state, label: label, credential: {
+          id: cred.id, rawId: pkB64.enc(cred.rawId), type: cred.type,
+          response: { clientDataJSON: pkB64.enc(cred.response.clientDataJSON),
+                      attestationObject: pkB64.enc(cred.response.attestationObject),
+                      transports: cred.response.getTransports ? cred.response.getTransports() : [] } } };
+        const r = await fetch('/api/passkey/register', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.ok) { pkMsg.textContent = 'Added — next sign-in can use your fingerprint.'; window.renderPasskeys(); }
+        else { pkMsg.textContent = d.detail || 'Couldn\'t add this device.'; }
+      } catch (e) {
+        pkMsg.textContent = 'Cancelled — nothing was changed.';
+      }
+    });
+    window.renderPasskeys();
+  })();
 
   document.getElementById('saveModelBtn').addEventListener('click', () => {
     const msg = document.getElementById('modelMsg');
