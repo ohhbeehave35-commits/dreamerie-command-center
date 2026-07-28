@@ -104,7 +104,25 @@ def store_token(token_json: str):
     crm.set_setting(GOOGLE_TOKEN_KEY, token_json)
 
 
-def check_availability(date_str: str) -> dict:
+def _calendar_for(business: str = "") -> str:
+    """Which calendar this call should touch.
+
+    A brand with its own calendar configured uses it; anything else keeps the
+    existing shared calendar. Unlike email, this deliberately does NOT refuse
+    when a brand has no calendar of its own: a calendar entry is internal,
+    visible and trivially moved, so refusing would just break scheduling to
+    prevent a harmless mistake. Email refuses because a wrong-brand message to
+    a client cannot be unsent.
+    """
+    if business:
+        from . import brand_identity
+        own = brand_identity.resolve_calendar_id(business)
+        if own:
+            return own
+    return crm.get_setting(CALENDAR_ID_KEY, "primary")
+
+
+def check_availability(date_str: str, business: str = "") -> dict:
     """
     Check if a removal is already scheduled on a given date.
     Returns {"available": bool, "removals": [{"time": "9am-12pm", "area": "Downtown"}]}
@@ -118,7 +136,7 @@ def check_availability(date_str: str) -> dict:
         start = date_obj.replace(hour=0, minute=0, second=0).isoformat() + "Z"
         end = (date_obj + timedelta(days=1)).replace(hour=0, minute=0, second=0).isoformat() + "Z"
 
-        calendar_id = crm.get_setting(CALENDAR_ID_KEY, "primary")
+        calendar_id = _calendar_for(business)
         events = (
             service.events()
             .list(
@@ -151,7 +169,7 @@ def check_availability(date_str: str) -> dict:
         return {"available": True, "removals": [], "reason": str(e)}
 
 
-def list_upcoming_events(days: int = 30) -> dict:
+def list_upcoming_events(days: int = 30, business: str = "") -> dict:
     """
     List events on the connected calendar over the next `days` days, for the
     Command Center's Schedule panel. Returns
@@ -169,7 +187,7 @@ def list_upcoming_events(days: int = 30) -> dict:
         now = datetime.utcnow()
         start = now.isoformat() + "Z"
         end = (now + timedelta(days=days)).isoformat() + "Z"
-        calendar_id = crm.get_setting(CALENDAR_ID_KEY, "primary")
+        calendar_id = _calendar_for(business)
         events = (
             service.events()
             .list(
@@ -214,7 +232,7 @@ def list_upcoming_events(days: int = 30) -> dict:
         return {"connected": True, "events": [], "reason": str(e)}
 
 
-def create_removal_event(date_str: str, area: str, time_str: str, customer_name: str = "", customer_phone: str = "") -> str:
+def create_removal_event(date_str: str, area: str, time_str: str, customer_name: str = "", customer_phone: str = "", business: str = "") -> str:
     """
     Create a removal event on the calendar.
     Returns confirmation message or error.
@@ -237,7 +255,7 @@ def create_removal_event(date_str: str, area: str, time_str: str, customer_name:
             "end": {"dateTime": end_dt.isoformat(), "timeZone": "America/New_York"},
         }
 
-        calendar_id = crm.get_setting(CALENDAR_ID_KEY, "primary")
+        calendar_id = _calendar_for(business)
         service.events().insert(calendarId=calendar_id, body=event).execute()
         return f"Removal scheduled for {date_str} at {time_str} in {area}."
     except Exception as e:
@@ -245,7 +263,7 @@ def create_removal_event(date_str: str, area: str, time_str: str, customer_name:
 
 
 def create_inspection_event(date_str: str, area: str, time_str: str, visit_type: str,
-                             customer_name: str = "", customer_phone: str = "") -> str:
+                             customer_name: str = "", customer_phone: str = "", business: str = "") -> str:
     """
     Create a paid Inspection Service Call on the calendar -- separate from a
     removal event and not counted against the 2-removals/day cap (check_availability
@@ -276,7 +294,7 @@ def create_inspection_event(date_str: str, area: str, time_str: str, visit_type:
             "end": {"dateTime": end_dt.isoformat(), "timeZone": "America/New_York"},
         }
 
-        calendar_id = crm.get_setting(CALENDAR_ID_KEY, "primary")
+        calendar_id = _calendar_for(business)
         service.events().insert(calendarId=calendar_id, body=event).execute()
         return f"{kind} scheduled for {date_str} at {time_str} in {area} (${fee})."
     except Exception as e:

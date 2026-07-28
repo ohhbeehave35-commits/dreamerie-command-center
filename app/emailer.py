@@ -40,22 +40,53 @@ def is_configured() -> bool:
     return bool(get_gmail_address() and get_gmail_app_password())
 
 
-def send_email(to: str, subject: str, body: str) -> str:
+def send_email(to: str, subject: str, body: str, business: str = "") -> str:
     """Actually send one email via Gmail SMTP. Returns a short confirmation
-    or explanation of why it couldn't send -- never raises."""
-    address, app_password = get_gmail_address(), get_gmail_app_password()
-    if not (address and app_password):
-        return "Email isn't connected yet -- connect it from the Settings panel."
+    or explanation of why it couldn't send -- never raises.
+
+    `business` is the active chat mode. When it names a brand, the From address
+    comes from that brand's own identity (see brand_identity) and a brand with
+    nothing set up REFUSES rather than falling back to the main account --
+    a wrong-brand email to a client cannot be unsent.
+
+    Passing no business keeps the old single-identity behaviour, which is what
+    the public widget and any non-mode caller still want.
+    """
     if not to or not _EMAIL_RE.match(to.strip()):
         return f"That doesn't look like a valid email address: {to!r}."
+
+    alias_note = ""
+    if business:
+        from . import brand_identity
+        ident = brand_identity.resolve_email(business)
+        if not ident.get("ok"):
+            return ident.get("error", "That business isn't set up to send email yet.")
+        from_address, login, app_password = ident["from"], ident["login"], ident["password"]
+        if ident["alias"] and from_address.lower() != login.lower():
+            # Gmail only honours a different From if that address is verified
+            # under Settings > Accounts > "Send mail as". If it is NOT verified
+            # Google quietly rewrites From back to the account address and the
+            # send still succeeds -- a wrong-brand email with no error anywhere.
+            # We cannot detect that over SMTP, so say it out loud instead.
+            alias_note = (
+                f" Sent as {from_address}; if that address isn't verified under "
+                f"Gmail > Settings > Accounts > 'Send mail as', Google will have "
+                f"rewritten it to {login} -- worth checking the sent copy once."
+            )
+    else:
+        from_address = login = get_gmail_address()
+        app_password = get_gmail_app_password()
+        if not (from_address and app_password):
+            return "Email isn't connected yet -- connect it from the Settings panel."
+
     msg = MIMEText(body)
     msg["Subject"] = subject or "(no subject)"
-    msg["From"] = address
+    msg["From"] = from_address
     msg["To"] = to
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as s:
-            s.login(address, app_password)
-            s.sendmail(address, [to], msg.as_string())
-        return f"Sent to {to}."
+            s.login(login, app_password)
+            s.sendmail(from_address, [to], msg.as_string())
+        return f"Sent to {to} from {from_address}.{alias_note}"
     except Exception as e:
         return f"Couldn't send that email: {type(e).__name__}: {e}"

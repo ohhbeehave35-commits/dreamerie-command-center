@@ -690,7 +690,7 @@ class FileAttachment(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: List[Dict[str, str]] = []  # [{"role": "user"|"assistant", "content": "..."}]
-    mode: str = "combined"  # "ohh_beehave" | "stinger" | "combined"
+    mode: str = "combined"  # dreamerie | suzy_d | bear_arms | peptides | combined
     chat_id: str = "default"
     speaker: str = ""  # who's currently talking under this login, e.g. "Jane"; "" = the account owner
     file: Optional[FileAttachment] = None
@@ -896,8 +896,14 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                    system_prompt: str = MAIN_BRAIN_SYSTEM_PROMPT,
                    tools=DELEGATION_TOOLS, enable_search: bool = False,
                    persona: str = "owner", file: Optional["FileAttachment"] = None,
-                   request_id: str = "", model: str = "", chat_id: str = ""):
+                   request_id: str = "", model: str = "", chat_id: str = "",
+                   business: str = ""):
     """The Main Brain as a stream of events rather than one blocking call.
+
+    `business` is the active chat mode. It reaches the dispatch loop so that
+    outbound actions can use the right brand's identity -- the mode used to
+    select only the tool list and the prompt, which meant Annabelle answering
+    as Bear Arms still sent mail from The Dreamerie's address.
 
     Yields, in order:
       {"type": "text",  "text": ...}   token deltas, the moment they arrive
@@ -1061,7 +1067,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                     to = to or pending.get("to", "")
                     subject = subject or pending.get("subject", "")
                     body_text = body_text or pending.get("body", "")
-                answer = emailer.send_email(to, subject, body_text)
+                answer = emailer.send_email(to, subject, body_text, business=business)
                 if chat_id:
                     _pending_email_drafts.pop(chat_id, None)
             elif block.name == "send_sms":
@@ -1216,7 +1222,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
             elif block.name == "check_availability":
                 delegated_to.append("Calendar")
                 avail_date = block.input.get("date", "")
-                result = gcal.check_availability(avail_date)
+                result = gcal.check_availability(avail_date, business=business)
                 if result.get("reason") == "Calendar not connected":
                     answer = (
                         "The calendar isn't connected yet, so I can't see the real "
@@ -1243,6 +1249,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                     block.input.get("time", ""),
                     block.input.get("customer_name", ""),
                     block.input.get("customer_phone", ""),
+                    business=business,
                 )
             elif block.name == "create_inspection_event":
                 delegated_to.append("Calendar (inspection booked)")
@@ -1253,6 +1260,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                     block.input.get("visit_type", ""),
                     block.input.get("customer_name", ""),
                     block.input.get("customer_phone", ""),
+                    business=business,
                 )
             elif block.name == "get_vendor_events":
                 delegated_to.append("Events Tracker")
@@ -1859,12 +1867,14 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                    system_prompt: str = MAIN_BRAIN_SYSTEM_PROMPT,
                    tools=DELEGATION_TOOLS, enable_search: bool = False,
                    persona: str = "owner", file: Optional["FileAttachment"] = None,
-                   request_id: str = "", model: str = "", chat_id: str = "") -> ChatResponse:
+                   request_id: str = "", model: str = "", chat_id: str = "",
+                   business: str = "") -> ChatResponse:
     """Blocking form: drain the event stream, hand back the final response.
     Kept so /api/public-chat and the widget keep working exactly as before."""
     final: Optional[ChatResponse] = None
     for ev in _run_main_brain_events(user_message, history, system_prompt, tools,
-                                     enable_search, persona, file, request_id, model, chat_id):
+                                     enable_search, persona, file, request_id, model, chat_id,
+                                     business):
         if ev["type"] == "done":
             final = ev["response"]
     if final is None:  # generator exhausted without a done event -- shouldn't happen
@@ -1970,7 +1980,8 @@ def chat(req: ChatRequest, request: Request) -> ChatResponse:
     try:
         result = run_main_brain(req.message, req.history, sys_prompt, tools, enable_search=True,
                                  persona="owner", file=req.file, request_id=req.request_id,
-                                 model=req.model, chat_id=_scoped_chat_id(request, req.chat_id))
+                                 model=req.model, chat_id=_scoped_chat_id(request, req.chat_id),
+                                 business=req.mode)
     finally:
         _clear_cancelled(req.request_id)
     if result.reply == STOPPED_REPLY:
@@ -2024,7 +2035,8 @@ def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
             for ev in _run_main_brain_events(req.message, req.history, sys_prompt, tools,
                                              enable_search=True, persona="owner", file=req.file,
                                              request_id=req.request_id, model=req.model,
-                                             chat_id=_scoped_chat_id(request, req.chat_id)):
+                                             chat_id=_scoped_chat_id(request, req.chat_id),
+                                             business=req.mode):
                 if ev["type"] == "done":
                     result = ev["response"]
                     if result.reply != STOPPED_REPLY:
