@@ -1,6 +1,5 @@
 """
-FastAPI backend for The Dreamerie / Suzy D command center (Susan's business).
-Built from the Stinger Industries delivery playbook.
+FastAPI backend for the Stinger Industries / Ohh Beehave command center.
 
 Run with:
     uvicorn app.main:app --reload --port 8000
@@ -8,10 +7,16 @@ Run with:
 Requires ANTHROPIC_API_KEY set in the environment (see .env.example).
 """
 
+import json
+import logging
 import os
+import re
+import secrets
 import threading
 import time
-from typing import List, Dict
+import traceback
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Optional
 
 import edge_tts
 import httpx
@@ -19,78 +24,170 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import (
+    FileResponse, Response, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
+    PlainTextResponse,
+)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from anthropic import Anthropic
+from openai import OpenAI
 
 from . import crm
-from . import emailer
-from . import social
-from . import assets
 from . import events
+from . import toolbox
+from . import emailer
+from . import calendar as gcal
+from . import social
+from . import voice_eleven
+from . import assets
+from . import video_cost
 from . import users
+from . import results
+from . import brand
+from . import hubspot
+from . import stripe_billing
+from . import media_gen
+from . import diagnostic
+from . import files_dropbox
+from . import files_gdrive
+from . import push
+from . import webfetch
+from . import seo_audit
+from . import config_check
 from .agents import (
+    MAIN_BRAIN_SYSTEM_PROMPT,
     build_main_brain_prompt,
     build_public_prompt,
+    get_automation_level_prompt,
     SUB_AGENTS,
     DELEGATION_TOOLS,
     TOOL_NAME_TO_AGENT_KEY,
+    MODE_TOOLS,
+    MODE_PROMPTS,
+    PUBLIC_SYSTEM_PROMPT,
     PUBLIC_TOOLS,
 )
 
-AGENT_NAME_KEY = "agent_name"  # Airtable Settings key for Susan's chosen name
+AGENT_NAME_KEY = "agent_name"
+
+def _current_agent_name():
+    """The name Susan gave the assistant, or None while unnamed."""
+    try:
+        return crm.get_setting(AGENT_NAME_KEY) or None
+    except Exception:
+        return None
+
+log = logging.getLogger(__name__)
+
+# Make sure INFO-level logs actually reach Render's log stream. Uvicorn sets
+# up its own handlers but not on our app's namespace; without this, log.info
+# calls silently vanish. Also give lines a timestamp Render can grep.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+else:
+    logging.getLogger().setLevel(logging.INFO)
 
 load_dotenv(override=True)  # .env wins over any stale system-level key
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 # Neural voice for spoken replies (free via Edge TTS). Try e.g. en-US-AndrewNeural,
 # en-US-EmmaNeural, en-GB-SoniaNeural. Override with TTS_VOICE in .env.
 TTS_VOICE = os.environ.get("TTS_VOICE", "en-GB-RyanNeural")
-# Speaking pace, e.g. "-8%" for calmer/warmer, "+0%" default. Tune via env.
-TTS_RATE = os.environ.get("TTS_RATE", "-6%")
+# Speaking pace. Sonia/Ryan are already unhurried newsreader voices, so the old
+# "-6%" default stacked slow on slow and read as lethargic. A slight push above
+# baseline lands closer to how a person actually talks. Tune via env.
+TTS_RATE = os.environ.get("TTS_RATE", "+4%")
 # Grok (xAI) TTS: set XAI_API_KEY to use it; otherwise free Edge TTS is used.
-# Voices: ara, eve, leo, rex, sal -- or a cloned voice_id.
+# Same endpoint as originally wired (POST /v1/tts) -- xAI didn't ship a newer
+# API, they expanded the voice roster: the original 5 (ara, eve, leo, rex,
+# sal) plus 21 new flagship voices added July 2026 (Carina, Zagan, Helix,
+# Orion, Luna, Iris, Altair, Zenith, Perseus, Helios, Lux, Kepler, Rigel,
+# Cosmo, Celeste, Ursa, Sirius, Lumen, Castor, Naksh, Atlas), all natively
+# multilingual (25+ languages). Carina is documented as tuned for "soft,
+# empathetic customer service tones" -- worth trying for Annabelle's public
+# persona; any of the 26 IDs work as-is with the existing integration, or a
+# cloned voice_id.
 XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 XAI_VOICE = os.environ.get("XAI_VOICE", "eve")
 client = Anthropic()  # reads ANTHROPIC_API_KEY from env
 
+# OpenAI integration (ChatGPT). Key is stored in Airtable settings.
+OPENAI_API_KEY_SETTING = "openai_api_key"
+
+def _get_openai_key() -> str:
+    """Get OpenAI API key from Airtable settings, fallback to env var."""
+    if crm.is_configured():
+        key = crm.get_setting(OPENAI_API_KEY_SETTING, "")
+        if key:
+            return key
+    return os.environ.get("OPENAI_API_KEY", "")
+
+def is_openai_configured() -> bool:
+    """Check if OpenAI API key is configured."""
+    return bool(_get_openai_key())
+
+def get_openai_client() -> Optional[OpenAI]:
+    """Get OpenAI client if configured, else None."""
+    key = _get_openai_key()
+    return OpenAI(api_key=key) if key else None
+
 # Owner-only, metered live web search. Never added to PUBLIC_TOOLS -- the
-# customer-facing widget can never trigger a search. Cap resets monthly (see
-# crm._search_usage_key); once hit, the assistant is told to say so plainly.
+# customer-facing widget on the Ohh Beehave site can never trigger a search.
+# The cap resets monthly (see crm._search_usage_key); once hit, Annabelle is
+# told to say so plainly rather than silently going quiet.
 WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search"}
 SEARCH_MONTHLY_CAP = int(os.environ.get("SEARCH_MONTHLY_CAP", "50"))
 SEARCH_CAPPED_NOTE = (
     "\n\nNOTE: the web search budget for this billing period has been reached. "
-    "If asked to search, do not attempt it -- tell Susan plainly that search is "
-    "capped for now and Vinny needs to raise SEARCH_MONTHLY_CAP or wait for "
-    "next month's reset."
+    "If asked to search, do not attempt it -- tell Vinny plainly that search is "
+    "capped for now and he needs to raise SEARCH_MONTHLY_CAP or wait for next "
+    "month's reset."
 )
 
 # Platform-wide spend guardrail: a hard monthly cap on ordinary chat turns,
-# checked BEFORE any Anthropic call is made. Public gets a much lower default
-# than owner, since it's the surface a stranger or a bot can hit freely.
+# checked BEFORE any Anthropic call is made (a true circuit breaker, not just
+# a polite refusal after spending money). Public gets a much lower default
+# than owner, since it's the one surface a stranger or a bot can hit freely.
 PUBLIC_MONTHLY_CAP = int(os.environ.get("PUBLIC_MONTHLY_CAP", "300"))
 OWNER_MONTHLY_CAP = int(os.environ.get("OWNER_MONTHLY_CAP", "2000"))
 PUBLIC_CAPPED_REPLY = (
     "Thanks so much for reaching out! Our assistant is temporarily at capacity "
-    "for the moment -- please reach out directly and we'll get right back to "
-    "you, or feel free to try again a bit later."
+    "for the moment -- please call or email us directly and we'll get right "
+    "back to you, or feel free to try again a bit later."
 )
 OWNER_CAPPED_REPLY = (
-    "I've hit my chat budget for this billing period, Susan -- Vinny will need "
-    "to raise OWNER_MONTHLY_CAP in the environment settings or wait for next "
+    "I've hit my chat budget for this billing period, Vinny -- you'll need to "
+    "raise OWNER_MONTHLY_CAP in the environment settings or wait for next "
     "month's reset."
+)
+
+# AI image/video generation (xAI Grok Imagine, app/media_gen.py) is available
+# to the PUBLIC widget (see agents.PUBLIC_TOOLS), so these caps are a real
+# spend guardrail on a surface a stranger can hit freely -- checked before
+# calling xAI, same circuit-breaker discipline as the search/chat caps above.
+# Video costs meaningfully more per call than an image, hence the lower default.
+IMAGE_MONTHLY_CAP = int(os.environ.get("IMAGE_MONTHLY_CAP", "100"))
+VIDEO_MONTHLY_CAP = int(os.environ.get("VIDEO_MONTHLY_CAP", "15"))
+IMAGE_CAPPED_REPLY = (
+    "The image-generation budget for this billing period has been reached. "
+    "Raise IMAGE_MONTHLY_CAP (or the Settings override) or wait for next month's reset."
+)
+VIDEO_CAPPED_REPLY = (
+    "The video-generation budget for this billing period has been reached. "
+    "Raise VIDEO_MONTHLY_CAP (or the Settings override) or wait for next month's reset."
 )
 
 
 def _int_override(key: str, default: int) -> int:
     """Read an admin-editable int setting from Airtable, falling back to the
-    env-var default if unset or invalid."""
-    try:
-        raw = crm.get_setting(key, "")
-        return int(raw) if raw else default
-    except ValueError:
+    env-var default if unset, invalid, or non-positive."""
+    raw = crm.get_setting(key, "")
+    if not raw:
         return default
+    return crm._parse_cap(raw, default)
 
 
 # Admin-editable overrides (Settings panel) win over env vars, take effect
@@ -108,8 +205,101 @@ def get_owner_chat_cap() -> int:
     return _int_override("cap_chat_owner", OWNER_MONTHLY_CAP)
 
 
+def get_image_cap() -> int:
+    return _int_override("cap_image_monthly", IMAGE_MONTHLY_CAP)
+
+
+def get_video_cap() -> int:
+    return _int_override("cap_video_monthly", VIDEO_MONTHLY_CAP)
+
+
 def get_tts_voice() -> str:
     return crm.get_setting("tts_voice_override", "") or TTS_VOICE
+
+
+AUTOMATION_LEVELS = ("manual", "semi_auto", "full_auto")
+
+
+def get_automation_level() -> str:
+    return crm.get_setting("automation_level", "") or "manual"
+
+
+def get_user_tts_voice(username: Optional[str] = None) -> str:
+    """TTS voice for a specific user; falls back to global setting."""
+    if username:
+        v = crm.get_user_setting(username, "tts_voice_override", "")
+        if v:
+            return v
+    return get_tts_voice()
+
+
+def get_user_model_key(username: Optional[str] = None) -> str:
+    """Chat model slug for a specific user; falls back to account default."""
+    if username:
+        m = crm.get_user_setting(username, "chat_model_default", "")
+        if m in MODEL_CHOICES:
+            return m
+    return get_default_model_key()
+
+
+def get_user_automation_level(username: Optional[str] = None) -> str:
+    """Automation level for a specific user; falls back to account default."""
+    if username:
+        a = crm.get_user_setting(username, "automation_level", "")
+        if a in AUTOMATION_LEVELS:
+            return a
+    return get_automation_level()
+
+
+# ── AI MODEL SELECTION ───────────────────────────────────────────────────────
+# Which Claude model powers Annabelle. Picked per-message from the chat bar, or
+# left on "auto" to use the account default (Settings -> AI Model). Keyed by a
+# short slug rather than the raw model id so the frontend never sends an
+# arbitrary string straight into the API -- anything not in this table falls
+# back to the default, which is the whole point of the allowlist.
+MODEL_CHOICES = {
+    "opus-5": {
+        "id": "claude-opus-5",
+        "label": "Opus 5",
+        "blurb": "Deepest reasoning. Best for proposals, audits, and hard problems. Slowest and priciest.",
+    },
+    "sonnet-5": {
+        "id": "claude-sonnet-5",
+        "label": "Sonnet 5",
+        "blurb": "Balanced speed and smarts. The everyday default.",
+    },
+    "haiku-4-5": {
+        "id": "claude-haiku-4-5",
+        "label": "Haiku 4.5",
+        "blurb": "Fastest and cheapest. Good for quick lookups and short answers.",
+    },
+}
+DEFAULT_MODEL_KEY = "sonnet-5"
+
+
+def get_default_model_key() -> str:
+    """The account-wide default model slug (Settings -> AI Model)."""
+    saved = crm.get_setting("chat_model_default", "")
+    if saved in MODEL_CHOICES:
+        return saved
+    # Honor a CLAUDE_MODEL env override if it names one of the choices, so an
+    # existing deployment's env var keeps working without a Settings save.
+    for key, spec in MODEL_CHOICES.items():
+        if spec["id"] == MODEL:
+            return key
+    return DEFAULT_MODEL_KEY
+
+
+def resolve_model(key: str = "") -> str:
+    """Turn a slug from the chat bar into a real model id.
+
+    Blank / "auto" / anything unrecognized resolves to the account default, so
+    a stale or hand-edited client can never send us an unsupported model id.
+    """
+    key = (key or "").strip().lower()
+    if key in MODEL_CHOICES:
+        return MODEL_CHOICES[key]["id"]
+    return MODEL_CHOICES.get(get_default_model_key(), MODEL_CHOICES[DEFAULT_MODEL_KEY])["id"]
 
 
 def get_access_code() -> str:
@@ -117,10 +307,17 @@ def get_access_code() -> str:
 
 
 app = FastAPI(title="The Dreamerie Command Center")
+
+# Canonical public origin. Used by robots.txt, sitemap.xml and the canonical/OG
+# tags on the marketing pages. NOTE (27 Jul 2026): stingerindustries.ai does not
+# resolve and stingerindustries.com redirects to an unrelated company, so this
+# Render hostname is currently the only working public origin. Point this at the
+# real domain the moment one is registered -- canonical tags and the sitemap
+# follow it automatically.
+_SITE_BASE = os.environ.get("SITE_BASE_URL", "https://dreamerie-command-center.onrender.com").rstrip("/")
+
 ALLOWED_ORIGINS = [
     "https://dreamerie-command-center.onrender.com",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -128,6 +325,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    return response
+
+
+@app.on_event("startup")
+def startup_init():
+    """Initialize the system on startup: create default owner if needed."""
+    if not crm.is_configured():
+        return  # No Airtable, skip
+    # Check if any users exist yet
+    if users.list_users():
+        return  # Users already exist, don't overwrite
+    # Create default owner account: username=owner, password=changeme
+    # This is a safety default. In production, the owner should change this immediately
+    # and is prompted to do so in the UI.
+    default_username = "owner"
+    default_password = "changeme"
+    if users.add_user(default_username, "owner@example.com", default_password, "owner"):
+        print(f"[INIT] Created default owner account: {default_username} / {default_password}")
+        print("[INIT] WARNING: Change this password immediately in Settings!")
+    else:
+        print(f"[INIT] Default owner account ({default_username}) already exists or error creating it")
+
 
 # ---- Access gate (hosted deployments) -------------------------------------
 # Set ACCESS_CODE in the environment to require a code before anything loads.
@@ -158,29 +385,142 @@ document.getElementById('f').addEventListener('submit', async (e) => {
 
 @app.middleware("http")
 async def access_gate(request: Request, call_next):
-    if not ACCESS_CODE:
+    if not ACCESS_CODE and not crm.is_configured():
         return await call_next(request)
     # Public, customer-facing paths (the website chat widget) are never gated.
-    if request.url.path in ("/api/unlock", "/api/public-chat", "/widget", "/privacy"):
+    if (request.url.path in (
+            "/api/login", "/api/public-chat", "/api/brand", "/widget",
+            "/privacy", "/terms", "/capabilities", "/auth/google-callback",
+            "/auth/drive-callback", "/dropbox/callback",
+            "/lightspeed/callback",
+            "/api/webhooks/stripe", "/api/webhooks/buildertrend",
+            "/api/proposals/sign",  # proposal viewer accessed by clients, not owners
+            "/proposal",  # client-facing proposal viewer
+            "/healthz",  # uptime monitor probe -- must never require auth
+            "/run/calendar-reminder",  # GitHub Actions cron trigger -- protected by its own secret, not a session
+                                                # Crawlers fetch these before anything else. Behind the gate they
+            # returned 401, so the site had no sitemap and no robots policy.
+            "/robots.txt",
+            # PWA install assets. These must be reachable WITHOUT a session:
+            # the browser fetches the manifest and registers the service worker
+            # from the page context, and a 401 on either one silently makes the
+            # app non-installable ("Add to Home Screen" never appears, and no
+            # service worker means no push and no offline shell). They contain
+            # nothing private -- app name, colors, and the logo that's already
+            # public on the marketing site.
+            "/static/manifest.json", "/static/sw.js",
+            "/static/apple-touch-icon.png", "/static/favicon-32.png",
+            # Marketing images referenced BY the public pages. Without these the
+            # gate returned 401 for the logo in the nav of every public page and
+            # for the two hero visuals on /ai-solutions -- so every prospect who
+            # ever loaded the site saw broken images. The pages were public; the
+            # images they point at were not. Nothing private here: this is the
+            # same logo already printed on client documents.
+            "/static/logo.webp", "/static/braincenter.webp", "/static/brainagent.webp",
+        )
+                                                or request.url.path.startswith("/static/icon-")  # PWA app icons
+            or request.url.path.startswith("/artifact/")):  # client-facing document link
         return await call_next(request)
-    if request.cookies.get("cc_access") == get_access_code():
+    # Check for valid session token in cookie. Also confirm the user still
+    # exists -- fixes open finding #2 (deleted user's cookies remaining valid
+    # until natural TTL). Cached (5 min TTL) so this doesn't add an Airtable
+    # round-trip to every request; the tradeoff is up to 5 min of extra
+    # access for a deleted user, vs the previous unbounded 30 days.
+    session_token = request.cookies.get("cc_session")
+    if session_token:
+        username = users.verify_session_token(session_token)
+        if username and users.user_exists_cached(username):
+            return await call_next(request)
+    # Backward compatibility: if old ACCESS_CODE is still set and matches, allow it
+    # (for migration from old system). This is temporary and should be removed after migration.
+    if ACCESS_CODE and secrets.compare_digest(request.cookies.get("cc_access", ""), get_access_code()):
         return await call_next(request)
-    # Also accept a valid session token (multi-user login)
-    session_tok = request.cookies.get("cc_session")
-    if session_tok and users.verify_session_token(session_tok):
-        return await call_next(request)
+    # A direct/bookmarked/emailed link to an app PAGE (basic.html, index.html,
+    # ...) must land on the sign-in form, not raw JSON -- a human just
+    # navigated here and expects something to read, not fetch() data. Only
+    # non-page static assets (and /api/) get the JSON the frontend's own
+    # fetch() calls know how to handle.
+    if request.url.path.startswith("/static/") and request.url.path.endswith(".html"):
+        return HTMLResponse(LOCK_PAGE, status_code=401)
     if request.url.path.startswith("/api/") or request.url.path.startswith("/static/"):
         return JSONResponse({"detail": "locked"}, status_code=401)
     return HTMLResponse(LOCK_PAGE, status_code=401)
 
 
-class UnlockRequest(BaseModel):
-    code: str
+# Paths a customer can reach. They get a warm, vague message -- a stranger on
+# the website should never learn that the account is behind on a bill.
+_PUBLIC_PATHS = ("/api/public-chat", "/widget", "/artifact/", "/proposal")
+
+
+def _explain_upstream_failure(exc: Exception, path: str) -> tuple:
+    """Turn an unhandled exception into an honest, actionable message.
+
+    Written after a live 500 that read "internal error" and sent us looking for
+    a downed server. The server was fine -- the Anthropic account was out of
+    credit. The class of failure that costs the most time is the one that
+    describes itself wrongly.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    is_public = any(path.startswith(p) for p in _PUBLIC_PATHS)
+
+    if "credit balance is too low" in text or "billing" in text:
+        if is_public:
+            return ("Sorry -- the assistant is briefly unavailable. "
+                    "Please leave your details and we'll get right back to you.", 503)
+        return ("The Anthropic account is out of credit, so the assistant can't "
+                "reply. The server is fine. Top up at console.anthropic.com "
+                "(Plans & Billing) and it resumes immediately.", 503)
+
+    if "authentication_error" in text or "invalid x-api-key" in text or "invalid api key" in text:
+        if is_public:
+            return ("Sorry -- the assistant is briefly unavailable. "
+                    "Please leave your details and we'll get right back to you.", 503)
+        return ("The Anthropic API key is missing or invalid. Check "
+                "ANTHROPIC_API_KEY in the Render dashboard.", 503)
+
+    if "rate_limit" in text or "overloaded" in text or "529" in text:
+        return ("The AI service is rate-limited or overloaded right now. "
+                "Wait a moment and try again.", 503)
+
+    return ("internal error", 500)
+
+
+@app.middleware("http")
+async def request_logger(request: Request, call_next):
+    """Log every request with method, path, status, and duration. On any
+    unhandled exception, log the full traceback and return 500 (so the worker
+    stays alive -- previously an exception here would crash the worker and
+    Cloudflare would surface a 520)."""
+    start = time.perf_counter()
+    path = request.url.path
+    method = request.method
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        dur_ms = int((time.perf_counter() - start) * 1000)
+        log.error(
+            "REQ_FAIL %s %s -> 500 in %dms\n%s",
+            method, path, dur_ms, traceback.format_exc(),
+        )
+        # An out-of-credit or bad-key Anthropic account is not an "internal
+        # error" -- it is a two-minute fix, and reporting it as a generic 500
+        # sends you hunting for a server problem that doesn't exist. Ask the
+        # exception what happened and say so.
+        detail, status = _explain_upstream_failure(exc, path)
+        return JSONResponse({"detail": detail}, status_code=status)
+    dur_ms = int((time.perf_counter() - start) * 1000)
+    # Skip noisy healthz / static asset requests unless slow or errored
+    is_noisy = path == "/healthz" or path.startswith("/static/")
+    if response.status_code >= 500 or (not is_noisy) or dur_ms > 2000:
+        level = logging.WARNING if response.status_code >= 400 else logging.INFO
+        log.log(level, "REQ %s %s -> %d in %dms", method, path, response.status_code, dur_ms)
+    return response
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+    remember_me: bool = False
 
 
 # Brute-force protection on the access gate: per-IP sliding-window lockout.
@@ -190,56 +530,33 @@ UNLOCK_MAX_ATTEMPTS = int(os.environ.get("UNLOCK_MAX_ATTEMPTS", "5"))
 UNLOCK_WINDOW_SECONDS = int(os.environ.get("UNLOCK_WINDOW_SECONDS", "900"))  # 15 min
 _unlock_attempts: Dict[str, list] = {}
 
+# Global backstop: even if an attacker forges X-Forwarded-For to make every
+# guess look like a new IP, cap the TOTAL failed logins across all IPs in the
+# window. Set well above what a few real users fat-fingering passwords would hit,
+# but far below what a credential-guessing run needs. Tunable via env.
+UNLOCK_GLOBAL_MAX_ATTEMPTS = int(os.environ.get("UNLOCK_GLOBAL_MAX_ATTEMPTS", "50"))
+_global_unlock_attempts: list = []
+
+# How many trusted reverse-proxy hops sit in front of the app. On Render this is
+# 1 (Render's load balancer). If you put Cloudflare in front too, set it to 2.
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
+
 
 def _client_ip(request: Request) -> str:
-    # Render sits behind a proxy; X-Forwarded-For carries the real client IP first.
+    # X-Forwarded-For is "client, proxy1, proxy2, ...". The LEFTMOST entry is
+    # whatever the client sent and is fully spoofable, so we must NOT trust it.
+    # The rightmost entries are appended by infrastructure we control; counting
+    # in from the right by the number of trusted hops yields the real client IP
+    # that our own proxy actually observed and cannot be forged by the client.
     xff = request.headers.get("x-forwarded-for")
     if xff:
-        return xff.split(",")[0].strip()
+        parts = [p.strip() for p in xff.split(",") if p.strip()]
+        if parts:
+            idx = len(parts) - TRUSTED_PROXY_HOPS
+            if idx < 0:
+                idx = 0  # header shorter than expected; fall back to leftmost
+            return parts[idx]
     return request.client.host if request.client else "unknown"
-
-
-@app.post("/api/unlock")
-def unlock(req: UnlockRequest, request: Request) -> JSONResponse:
-    ip = _client_ip(request)
-    now = time.time()
-    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
-    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
-        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
-        return JSONResponse(
-            {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
-            status_code=429,
-        )
-    effective_code = get_access_code()
-    if effective_code and req.code == effective_code:
-        _unlock_attempts.pop(ip, None)
-        resp = JSONResponse({"ok": True})
-        resp.set_cookie("cc_access", effective_code, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
-        return resp
-    attempts.append(now)
-    _unlock_attempts[ip] = attempts
-    return JSONResponse({"ok": False}, status_code=401)
-
-
-@app.post("/api/setup")
-def setup_first_user(req: LoginRequest) -> JSONResponse:
-    """One-time bootstrap: create the first admin user if no users exist yet.
-    Disabled automatically once any user has been created."""
-    existing = users.list_users()
-    if existing:
-        return JSONResponse(
-            {"ok": False, "detail": "Setup already complete. Use /api/login."},
-            status_code=403,
-        )
-    if not req.username or not req.password:
-        return JSONResponse({"ok": False, "detail": "Username and password required"}, status_code=400)
-    ok = users.add_user(req.username, "admin@dreamerie.com", req.password, role="owner")
-    if not ok:
-        return JSONResponse({"ok": False, "detail": "Failed to create user"}, status_code=500)
-    token = users.create_session_token(req.username)
-    resp = JSONResponse({"ok": True, "detail": f"Account created for {req.username}. You are now logged in."})
-    resp.set_cookie("cc_session", token, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
-    return resp
 
 
 @app.post("/api/login")
@@ -247,23 +564,37 @@ def login(req: LoginRequest, request: Request) -> JSONResponse:
     """Authenticate with username + password, return signed session token in cookie."""
     ip = _client_ip(request)
     now = time.time()
+    global _global_unlock_attempts
+
+    # Per-IP sliding-window lockout.
     attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
-    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
-        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - attempts[0])) / 60) + 1)
+    # Global sliding-window backstop (defeats IP rotation / X-Forwarded-For spoofing).
+    _global_unlock_attempts = [t for t in _global_unlock_attempts if now - t < UNLOCK_WINDOW_SECONDS]
+
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS or len(_global_unlock_attempts) >= UNLOCK_GLOBAL_MAX_ATTEMPTS:
+        basis = attempts if len(attempts) >= UNLOCK_MAX_ATTEMPTS else _global_unlock_attempts
+        wait_min = max(1, int((UNLOCK_WINDOW_SECONDS - (now - basis[0])) / 60) + 1)
         return JSONResponse(
             {"ok": False, "detail": f"Too many attempts. Try again in about {wait_min} minute(s)."},
             status_code=429,
         )
+
+    # Look up user
     user = users.get_user(req.username)
     if not user or not users.verify_password(req.password, user["password_hash"]):
         attempts.append(now)
         _unlock_attempts[ip] = attempts
+        _global_unlock_attempts.append(now)
         return JSONResponse({"ok": False, "detail": "Invalid username or password"}, status_code=401)
+
+    # Successful login: clear this IP's attempts (leave the global counter alone
+    # so one valid login can't reset a backstop an attacker is filling).
     _unlock_attempts.pop(ip, None)
     users.update_last_login(req.username)
     token = users.create_session_token(req.username)
     resp = JSONResponse({"ok": True})
-    resp.set_cookie("cc_session", token, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    max_age = 60 * 60 * 24 * 30 if req.remember_me else None
+    resp.set_cookie("cc_session", token, max_age=max_age, httponly=True, samesite="lax", secure=True)
     return resp
 
 
@@ -272,13 +603,13 @@ def logout(request: Request) -> JSONResponse:
     """Clear session cookie."""
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("cc_session")
-    resp.delete_cookie("cc_access")
+    resp.delete_cookie("cc_access")  # Also clear old-style cookie if present
     return resp
 
 
 @app.get("/api/me")
 def get_current_user(request: Request) -> JSONResponse:
-    """Return info about the currently logged-in user."""
+    """Owner-only. Return info about the currently logged-in user."""
     session_token = request.cookies.get("cc_session")
     if not session_token:
         return JSONResponse({"username": None}, status_code=401)
@@ -298,25 +629,133 @@ def get_current_user(request: Request) -> JSONResponse:
     })
 
 
+def _authed_username(request: Request) -> Optional[str]:
+    """Return the logged-in username from the session cookie, or None if
+    unauthenticated (local dev with no gate, or the legacy ACCESS_CODE-only
+    cookie with no real account behind it)."""
+    token = request.cookies.get("cc_session")
+    if not token:
+        return None
+    return users.verify_session_token(token)
+
+
+def _scoped_chat_id(request: Request, chat_id: str) -> str:
+    """Namespace chat_id by the logged-in account so two different logins
+    never read or write each other's conversation history -- e.g. if Vinny
+    hands his mother a separate account, her conversation with Annabelle
+    stays hers, and never bleeds into his own history/context on reload.
+    Falls back to the raw chat_id (the old shared "default" bucket) only when
+    there's no authenticated session at all.
+
+    THE FALLBACK IS THE "I DON'T REMEMBER ANYTHING" BUG. The access gate lets a
+    request through on the legacy `cc_access` cookie even when `cc_session` is
+    gone (see access_gate). This function only looks at `cc_session`, so such a
+    request is served happily -- but against the raw "default" bucket instead of
+    "user:<name>:default". Different bucket, empty history, no error anywhere.
+
+    The trigger is ordinary: logging in without "remember me" sets cc_session
+    with max_age=None, a browser-session cookie that dies when the browser
+    closes, while cc_access survives. Reopen the app and memory looks wiped.
+
+    Callers that touch per-user memory must use _scoped_chat_id_checked()
+    instead, which refuses to guess. This one stays for non-memory paths."""
+    username = _authed_username(request)
+    if not username:
+        log.warning("MEMORY_SCOPE_FALLBACK chat_id=%s -- no cc_session; "
+                    "history would resolve to the unscoped bucket", chat_id)
+        return chat_id
+    return f"user:{username}:{chat_id}"
+
+
+def _scoped_chat_id_checked(request: Request, chat_id: str) -> Optional[str]:
+    """Scoped chat id, or None when we cannot say who is asking.
+
+    Returning None is the point. Serving a different bucket silently is how a
+    client demo ended with Annabelle saying she had no memory; making the caller
+    handle "I don't know who you are" turns a silent data problem into an
+    honest, fixable "your session expired, sign in again"."""
+    username = _authed_username(request)
+    if not username:
+        return None
+    return f"user:{username}:{chat_id}"
+
+
+class FileAttachment(BaseModel):
+    name: str = ""
+    type: str = ""
+    size: int = 0
+    data: str = ""  # base64, no data: prefix
+
+
 class ChatRequest(BaseModel):
     message: str
     history: List[Dict[str, str]] = []  # [{"role": "user"|"assistant", "content": "..."}]
+    mode: str = "combined"  # "ohh_beehave" | "stinger" | "combined"
+    chat_id: str = "default"
+    speaker: str = ""  # who's currently talking under this login, e.g. "Jane"; "" = the account owner
+    file: Optional[FileAttachment] = None
+    request_id: str = ""  # client-generated id; lets /api/chat/stop cancel this exact turn
+    model: str = ""  # MODEL_CHOICES slug; "" or "auto" = the account default
+
+    def clean(self) -> "ChatRequest":
+        """Enforce size limits: cap message at 12k chars, history at last 30 turns."""
+        self.message = self.message[:12000]
+        self.history = self.history[-30:]
+        self.chat_id = self.chat_id[:100]
+        self.speaker = self.speaker[:80]
+        self.request_id = self.request_id[:100]
+        self.model = self.model[:40]
+        if self.file and len(self.file.data) > 7_000_000:  # ~5MB decoded, base64-inflated
+            self.file = None
+        return self
 
 
 class ChatResponse(BaseModel):
     reply: str
     delegated_to: List[str] = []
-    # Per-stage timing breakdown in seconds, ported from the flagship's
-    # latency fix -- lets us verify the fix here with real numbers too.
+    artifact_url: Optional[str] = None  # URL to a created artifact (proposal, strategy, etc.)
+    artifact_title: Optional[str] = None  # Human-readable title for the artifact
+    alert: Optional[Dict[str, str]] = None  # {"title": ...} -- surfaces as a floating notification card
+    speaker_name: Optional[str] = None  # who's currently tagged as speaking under this login ("" = owner)
+    model_used: Optional[str] = None  # human-readable label of the model that answered
+    # Per-stage timing breakdown in seconds (precheck = Airtable cap/count
+    # round-trips before the first model call; model = Anthropic calls;
+    # tools = tool execution; save = post-reply Airtable writes). Added to
+    # diagnose response delay with real numbers instead of guesses.
     timings: Dict[str, float] = {}
 
 
-def call_sub_agent(agent_key: str, query: str) -> str:
-    """Run one sub-agent with a fresh, isolated context and return its answer."""
+_ALERT_RE = re.compile(r"^\s*\[\[ALERT:\s*(.+?)\s*\]\]\s*\n?", re.IGNORECASE)
+
+
+def _extract_alert(text: str) -> tuple[str, Optional[Dict[str, str]]]:
+    """Strip a leading [[ALERT: Title]] marker from a reply, if present.
+
+    Returns (cleaned_reply, alert_dict_or_None). Applied to owner-persona
+    replies only -- the public widget's system prompt never teaches this
+    marker, so it can't leak there even if this runs on both paths.
+    """
+    m = _ALERT_RE.match(text)
+    if not m:
+        return text, None
+    title = m.group(1)[:80]
+    cleaned = text[m.end():].strip()
+    return cleaned, {"title": title, "body": cleaned[:160]}
+
+
+_WRITING_AGENTS = {"proposal_writer", "audit_writer", "proposal_reviewer"}
+
+def call_sub_agent(agent_key: str, query: str, model: str = "") -> str:
+    """Run one sub-agent with a fresh, isolated context and return its answer.
+
+    Runs on whatever model the turn is using, so picking Opus for a proposal
+    also upgrades the proposal_writer that actually drafts it.
+    """
     agent = SUB_AGENTS[agent_key]
+    max_tokens = 2048 if agent_key in _WRITING_AGENTS else 1024
     resp = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
+        model=model or resolve_model(),
+        max_tokens=max_tokens,
         system=agent["system_prompt"],
         messages=[{"role": "user", "content": query}],
     )
@@ -331,11 +770,11 @@ def _count_web_searches(content) -> int:
     )
 
 
-def run_web_search(query: str) -> tuple:
+def run_web_search(query: str, model: str = "") -> tuple:
     """Run one live web search via Anthropic's server-side search tool.
     Returns (answer_text, number_of_searches_actually_performed)."""
     resp = client.messages.create(
-        model=MODEL,
+        model=model or resolve_model(),
         max_tokens=1024,
         tools=[WEB_SEARCH_TOOL],
         messages=[{"role": "user", "content": f"Search the web and answer concisely: {query}"}],
@@ -344,27 +783,156 @@ def run_web_search(query: str) -> tuple:
     return text, _count_web_searches(resp.content)
 
 
-def run_main_brain(user_message: str, history: List[Dict[str, str]],
-                   system_prompt: str = None,
+_SCRAPE_MAX_BYTES = 600_000
+_SCRAPE_MAX_TEXT = 8000
+
+
+def scrape_page_text(url: str) -> str:
+    """Fetch a public web page and return its readable text (title, meta
+    description, visible body text). Refuses non-HTTP schemes and hosts that
+    resolve to private/internal addresses; truncates long pages. Fetch
+    failures return a plain-language explanation instead of raising -- a dead
+    domain or broken certificate is a finding Annabelle should report."""
+    resp, err = webfetch.safe_get(url)
+    if err:
+        return err
+    html = resp.content[:_SCRAPE_MAX_BYTES].decode(resp.encoding or "utf-8", errors="replace")
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    desc_m = re.search(
+        r'<meta[^>]+name=["\']description["\'][^>]*content=["\'](.*?)["\']', html, re.I | re.S
+    )
+    text = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    import html as _html
+    text = re.sub(r"\s+", " ", _html.unescape(text)).strip()
+    parts = [f"URL: {resp.url}", f"HTTP STATUS: {resp.status_code}"]
+    if title_m:
+        parts.append("TITLE: " + re.sub(r"\s+", " ", title_m.group(1)).strip()[:300])
+    if desc_m:
+        parts.append("META DESCRIPTION: " + desc_m.group(1).strip()[:500])
+    if text:
+        truncated = " (truncated)" if len(text) > _SCRAPE_MAX_TEXT else ""
+        parts.append(f"PAGE TEXT{truncated}:\n" + text[:_SCRAPE_MAX_TEXT])
+    else:
+        parts.append(
+            "PAGE TEXT: none extracted -- likely a JavaScript-rendered page. "
+            "Only the title/metadata above is available."
+        )
+    return "\n".join(parts)
+
+
+_TEXT_FILE_TYPES = {
+    "text/plain", "text/csv", "application/json", "text/html",
+    "application/xml", "text/xml", "text/markdown",
+}
+
+
+def _build_user_content(user_message: str, file: Optional["FileAttachment"]):
+    """Return the `content` value for the first user message. Plain string if
+    no file; a content-block list if a file is attached (image -> vision
+    block, text-like -> decoded and inlined, anything else -> named but
+    flagged as unreadable so Annabelle says so instead of ignoring it)."""
+    if not file or not file.data:
+        return user_message
+    if file.type.startswith("image/"):
+        return [
+            {"type": "text", "text": user_message},
+            {"type": "image", "source": {"type": "base64", "media_type": file.type, "data": file.data}},
+        ]
+    if file.type in _TEXT_FILE_TYPES:
+        try:
+            import base64 as _b64
+            decoded = _b64.b64decode(file.data).decode("utf-8", errors="replace")[:15000]
+        except Exception:
+            decoded = "(couldn't decode this file's contents)"
+        return (
+            f"{user_message}\n\n[Attached file: {file.name} ({file.type})]\n{decoded}"
+        )
+    return (
+        f"{user_message}\n\n[Vinny attached a file named {file.name} ({file.type or 'unknown type'}) "
+        "-- you can't read this file format yet, so tell him plainly rather than guessing at its contents.]"
+    )
+
+
+# ---- Stop button: lets the client cancel an in-flight run_main_brain loop --
+# The chat call isn't token-streamed (Claude's reply arrives as one block),
+# so "stop" can't interrupt mid-generation. What it CAN do -- and the case
+# that actually matters, since a single turn may loop through several
+# Anthropic calls plus slow tools (deep research, video generation) -- is
+# stop the loop from starting another round once the user's given up on it.
+_cancelled_requests: set = set()
+_cancel_lock = threading.Lock()
+
+# Pending email drafts: keyed by scoped chat_id so "send it" in the next turn
+# can retrieve the exact to/subject/body without the model re-drafting.
+_pending_email_drafts: Dict[str, dict] = {}
+
+
+def _mark_cancelled(request_id: str) -> None:
+    if not request_id:
+        return
+    with _cancel_lock:
+        _cancelled_requests.add(request_id)
+
+
+def _is_cancelled(request_id: str) -> bool:
+    if not request_id:
+        return False
+    with _cancel_lock:
+        return request_id in _cancelled_requests
+
+
+def _clear_cancelled(request_id: str) -> None:
+    if not request_id:
+        return
+    with _cancel_lock:
+        _cancelled_requests.discard(request_id)
+
+
+STOPPED_REPLY = "(stopped)"
+
+
+def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
+                   system_prompt: str = MAIN_BRAIN_SYSTEM_PROMPT,
                    tools=DELEGATION_TOOLS, enable_search: bool = False,
-                   persona: str = "owner") -> ChatResponse:
+                   persona: str = "owner", file: Optional["FileAttachment"] = None,
+                   request_id: str = "", model: str = "", chat_id: str = ""):
+    """The Main Brain as a stream of events rather than one blocking call.
+
+    Yields, in order:
+      {"type": "text",  "text": ...}   token deltas, the moment they arrive
+      {"type": "tool",  "name": ...}   a sub-agent/tool started (for the live log)
+      {"type": "done",  "response": ChatResponse}  final, with timings + artifacts
+
+    run_main_brain() below drains this and returns just the ChatResponse, so
+    every existing non-streaming caller is unchanged. Splitting it this way
+    means the big tool-dispatch block below exists in exactly one place.
+    """
     timings: Dict[str, float] = {"precheck": 0.0, "model": 0.0, "tools": 0.0}
     _t0 = time.perf_counter()
+    # Resolved once per turn: every model call this turn makes (main brain,
+    # sub-agents, web search) uses the same one, so a turn can't half-answer on
+    # Opus and half on Haiku.
+    active_model = resolve_model(model)
+    model_label = next((s["label"] for s in MODEL_CHOICES.values() if s["id"] == active_model), active_model)
     # Hard spend circuit breaker: checked BEFORE any Anthropic call is made,
-    # so a capped persona costs nothing to refuse.
+    # so a capped persona costs nothing to refuse -- not just a polite
+    # after-the-fact message once money's already been spent.
     cap = get_public_chat_cap() if persona == "public" else get_owner_chat_cap()
     capped_reply = PUBLIC_CAPPED_REPLY if persona == "public" else OWNER_CAPPED_REPLY
     if crm.get_chat_count(persona) >= cap:
-        return ChatResponse(reply=capped_reply, delegated_to=[])
+        yield {"type": "done", "response": ChatResponse(reply=capped_reply, delegated_to=[])}
+        return
     # Fire-and-forget: the count write shouldn't block the reply. The cap
     # check above reads the cached snapshot, and set_setting updates that
     # cache in place, so this instance still counts accurately.
     threading.Thread(target=crm.increment_chat_count, args=(persona,), daemon=True).start()
 
-    if system_prompt is None:
-        system_prompt = build_main_brain_prompt(crm.get_setting(AGENT_NAME_KEY) or None)
-    messages = list(history) + [{"role": "user", "content": user_message}]
+    messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, file)}]
     delegated_to: List[str] = []
+    artifact_url: Optional[str] = None
+    artifact_title: Optional[str] = None
+    speaker_name: Optional[str] = None  # set only if set_speaker fires this turn; None = unchanged
 
     # Owner-only, metered search. Never enabled for the public widget -- that
     # caller simply never passes enable_search=True.
@@ -379,17 +947,46 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
             effective_system_prompt = system_prompt + SEARCH_CAPPED_NOTE
     timings["precheck"] = round(time.perf_counter() - _t0, 3)
 
+    # Everything she says across every round, in order. A turn that calls a
+    # tool often narrates first ("Let me pull that up") -- that narration is
+    # spoken while the tool runs instead of being thrown away, which is most
+    # of the perceived speed-up on tool-using turns.
+    spoken_so_far: List[str] = []
+
     # Loop to allow multiple rounds of tool use (e.g. two sub-agents needed).
     for _ in range(4):
+        if _is_cancelled(request_id):
+            yield {"type": "done", "response": ChatResponse(reply=STOPPED_REPLY, delegated_to=delegated_to,
+                                 timings=timings, speaker_name=speaker_name)}
+            return
         _tm = time.perf_counter()
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
+        # Streamed, so the first sentence reaches the browser (and the TTS
+        # engine) while the rest is still being generated, instead of the
+        # client waiting on the whole completion before it can do anything.
+        # Long-form content (blog posts, proposals, campaigns) needs more room.
+        # Detect if the user is asking for content generation so we give enough tokens.
+        _long_form_keywords = ("blog", "post", "campaign", "write", "draft", "story", "content", "copy", "article")
+        _is_long_form = any(kw in user_message.lower() for kw in _long_form_keywords)
+        _stream_max_tokens = 4096 if _is_long_form else 1024
+        with client.messages.stream(
+            model=active_model,
+            max_tokens=_stream_max_tokens,
             system=effective_system_prompt,
             tools=effective_tools,
             messages=messages,
-        )
+        ) as stream:
+            for delta in stream.text_stream:
+                if _is_cancelled(request_id):
+                    break
+                spoken_so_far.append(delta)
+                yield {"type": "text", "text": delta}
+            resp = stream.get_final_message()
         timings["model"] = round(timings["model"] + (time.perf_counter() - _tm), 3)
+
+        if _is_cancelled(request_id):
+            yield {"type": "done", "response": ChatResponse(reply=STOPPED_REPLY, delegated_to=delegated_to,
+                                 timings=timings, speaker_name=speaker_name)}
+            return
 
         n_searches = _count_web_searches(resp.content)
         if n_searches:
@@ -397,9 +994,22 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
             delegated_to.append("Web Search")
 
         if resp.stop_reason != "tool_use":
-            final_text = "".join(b.text for b in resp.content if b.type == "text")
+            # Everything streamed this turn IS the reply -- what was displayed,
+            # what was spoken, and what gets saved to memory all match.
+            final_text = "".join(spoken_so_far)
+            final_text, alert = _extract_alert(final_text) if persona == "owner" else (final_text, None)
+            if alert:
+                # Fire-and-forget: also ring the owner's phone (lock-screen
+                # notification), not just the in-app floating card, in case
+                # they've stepped away from the screen.
+                threading.Thread(
+                    target=push.send_to_owner, args=(alert["title"], alert["body"]), daemon=True
+                ).start()
             timings["total"] = round(time.perf_counter() - _t0, 3)
-            return ChatResponse(reply=final_text, delegated_to=delegated_to, timings=timings)
+            yield {"type": "done", "response": ChatResponse(reply=final_text, delegated_to=delegated_to,
+                                 timings=timings, artifact_url=artifact_url, artifact_title=artifact_title,
+                                 alert=alert, speaker_name=speaker_name, model_used=model_label)}
+            return
 
         # Assistant turn included tool_use block(s); append it, then run each
         # tool and append the results, then loop back to let the Main Brain
@@ -410,13 +1020,13 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
         for block in resp.content:
             if block.type != "tool_use":
                 continue
+            if _is_cancelled(request_id):
+                yield {"type": "done", "response": ChatResponse(reply=STOPPED_REPLY, delegated_to=delegated_to,
+                                     timings=timings, speaker_name=speaker_name)}
+                return
+            yield {"type": "tool", "name": block.name}
             agent_key = TOOL_NAME_TO_AGENT_KEY.get(block.name)
-            if block.name == "set_agent_name":
-                new_name = (block.input.get("name") or "").strip()
-                ok = crm.set_setting(AGENT_NAME_KEY, new_name) if new_name else False
-                delegated_to.append("Settings")
-                answer = f"Saved -- you're now called {new_name}." if ok else "I heard the name but couldn't save it (settings store not connected)."
-            elif block.name == "log_lead":
+            if block.name == "log_lead":
                 delegated_to.append("CRM")
                 answer = crm.create_lead(**block.input)
             elif block.name == "find_leads":
@@ -425,19 +1035,47 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
             elif block.name == "log_build_request":
                 delegated_to.append("Build Queue")
                 answer = crm.create_build_request(**block.input)
+            elif block.name == "log_skill_note":
+                delegated_to.append("Skills Log")
+                answer = crm.log_skill_note(**block.input)
+            elif block.name == "set_speaker":
+                name = (block.input.get("name") or "").strip()[:80]
+                speaker_name = name  # "" deliberately clears back to the owner
+                answer = f"Tagging messages as {name} from now on." if name else "Back to the primary owner."
             elif block.name == "draft_email":
                 delegated_to.append("Email (draft)")
                 to = block.input.get("to", "")
                 subject = block.input.get("subject", "")
                 body_text = block.input.get("body", "")
+                if chat_id:
+                    _pending_email_drafts[chat_id] = {"to": to, "subject": subject, "body": body_text}
                 answer = f"DRAFT -- To: {to} | Subject: {subject}\n\n{body_text}"
             elif block.name == "send_email":
                 delegated_to.append("Email (sent)")
-                answer = emailer.send_email(
-                    block.input.get("to", ""),
-                    block.input.get("subject", ""),
-                    block.input.get("body", ""),
-                )
+                to = block.input.get("to", "")
+                subject = block.input.get("subject", "")
+                body_text = block.input.get("body", "")
+                # If model called send_email with empty params, pull from pending draft
+                if chat_id and (not to or not subject or not body_text):
+                    pending = _pending_email_drafts.get(chat_id, {})
+                    to = to or pending.get("to", "")
+                    subject = subject or pending.get("subject", "")
+                    body_text = body_text or pending.get("body", "")
+                answer = emailer.send_email(to, subject, body_text)
+                if chat_id:
+                    _pending_email_drafts.pop(chat_id, None)
+            elif block.name == "send_sms":
+                delegated_to.append("SMS (sent)")
+                from . import sms as _sms
+                to_num = block.input.get("to", "")
+                sms_body = block.input.get("body", "")
+                result = _sms.send(to_num, sms_body)
+                if result.get("sid"):
+                    answer = f"SMS sent to {to_num} (SID: {result['sid']})"
+                elif result.get("status") == "skipped":
+                    answer = f"SMS skipped — Twilio not configured."
+                else:
+                    answer = f"SMS sent to {to_num}"
             elif block.name == "draft_social_post":
                 delegated_to.append("Social (draft)")
                 answer = social.create_draft(
@@ -468,35 +1106,729 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
                     block.input.get("query", ""),
                     block.input.get("media_type", ""),
                 )
+            elif block.name == "generate_image":
+                delegated_to.append("Image Generation")
+                if crm.get_media_count("image") >= get_image_cap():
+                    answer = IMAGE_CAPPED_REPLY
+                else:
+                    prompt = block.input.get("prompt", "")
+                    result = media_gen.generate_image(prompt, block.input.get("aspect_ratio", ""))
+                    if not result.get("ok"):
+                        if result.get("error") == "not_connected":
+                            answer = "Image generation isn't connected yet -- please set OPENAI_API_KEY or XAI_API_KEY in Settings."
+                        elif result.get("error") == "chatgpt_not_connected":
+                            answer = "ChatGPT isn't connected -- OPENAI_API_KEY needs to be set, or try Grok."
+                        elif result.get("error") == "grok_not_connected":
+                            answer = "Grok isn't connected -- XAI_API_KEY needs to be set, or try ChatGPT."
+                        else:
+                            answer = f"Image generation failed: {result.get('error')}"
+                    else:
+                        crm.increment_media_count("image")
+                        name = prompt.strip()[:60] or "Generated image"
+                        actual_provider = result.get("provider", "unknown")
+                        save_result = assets.add_asset(name, result["url"], "Photo", "ai-generated",
+                                                         f"Generated via {actual_provider}. Prompt: {prompt.strip()[:500]}")
+                        if save_result.startswith("Saved "):
+                            answer = (
+                                f"Image generated via {actual_provider.upper()} and saved to the asset library as \"{name}\". "
+                                f"Direct URL: {result['url']}"
+                            )
+                            # Create artifact record so frontend renders the URL in the Artifacts panel
+                            artifact_slug = crm.create_artifact(name, f"![{name}]({result['url']})")
+                            if artifact_slug:
+                                artifact_url = f"/artifact/{artifact_slug}"
+                                artifact_title = name
+                        else:
+                            answer = (
+                                f"Image generated via {actual_provider.upper()}: {result['url']} "
+                                f"(asset library save note: {save_result})"
+                            )
+            elif block.name == "generate_video":
+                delegated_to.append("Video Generation")
+                if crm.get_media_count("video") >= get_video_cap():
+                    answer = VIDEO_CAPPED_REPLY
+                else:
+                    prompt = block.input.get("prompt", "")
+                    result = media_gen.generate_video(
+                        prompt,
+                        block.input.get("duration", 8),
+                        block.input.get("aspect_ratio", ""),
+                        block.input.get("image_url", ""),
+                    )
+                    if not result.get("ok"):
+                        if result.get("error") == "not_connected":
+                            answer = "Video generation isn't connected yet -- XAI_API_KEY needs to be set."
+                        elif result.get("error") == "timeout":
+                            answer = "The video is still processing -- ask again in a minute, or check the asset library shortly."
+                        else:
+                            answer = f"Video generation failed: {result.get('error')}"
+                    else:
+                        crm.increment_media_count("video")
+                        name = prompt.strip()[:60] or "Generated video"
+                        save_result = assets.add_asset(name, result["url"], "Video", "ai-generated",
+                                                         f"Generated via xAI. Prompt: {prompt.strip()[:500]}")
+                        dur = result.get('duration', '')
+                        if save_result.startswith("Saved "):
+                            answer = f"Generated a {dur}s video and saved it to the asset library as \"{name}\"."
+                            # Create artifact record so frontend renders the URL in the Artifacts panel
+                            artifact_slug = crm.create_artifact(name, f"[Video]({result['url']})\n\nDuration: {dur}s")
+                            if artifact_slug:
+                                artifact_url = f"/artifact/{artifact_slug}"
+                                artifact_title = name
+                        else:
+                            answer = f"Generated a {dur}s video: {result['url']} (asset library save did not confirm: {save_result})"
+            elif block.name == "predict_video_cost":
+                delegated_to.append("Video Cost Log")
+                answer = video_cost.predict_cost(
+                    block.input.get("project", ""),
+                    block.input.get("predicted_cost", 0),
+                    block.input.get("notes", ""),
+                )
+            elif block.name == "log_cost_checkpoint":
+                delegated_to.append("Video Cost Log")
+                answer = video_cost.log_checkpoint(
+                    block.input.get("project", ""),
+                    block.input.get("checkpoint", 0),
+                    block.input.get("current_cost", 0),
+                    block.input.get("notes", ""),
+                )
+            elif block.name == "log_actual_video_cost":
+                delegated_to.append("Video Cost Log")
+                answer = video_cost.log_actual(
+                    block.input.get("project", ""),
+                    block.input.get("actual_cost", 0),
+                    block.input.get("lesson", ""),
+                )
+            elif block.name == "get_video_cost_accuracy":
+                delegated_to.append("Video Cost Log")
+                answer = video_cost.get_accuracy(block.input.get("project", ""))
+            elif block.name == "set_agent_name":
+                new_name = (block.input.get("name") or "").strip()
+                ok = crm.set_setting(AGENT_NAME_KEY, new_name) if new_name else False
+                delegated_to.append("Settings")
+                answer = f"Saved -- you're now called {new_name}." if ok else "I heard the name but couldn't save it (settings store not connected)."
             elif block.name == "log_event":
                 delegated_to.append("Events Tracker")
                 answer = events.add_event(**block.input)
             elif block.name == "find_events":
                 delegated_to.append("Events Tracker")
                 answer = events.list_events(**block.input)
+            elif block.name == "check_availability":
+                delegated_to.append("Calendar")
+                avail_date = block.input.get("date", "")
+                result = gcal.check_availability(avail_date)
+                if result.get("reason") == "Calendar not connected":
+                    answer = (
+                        "The calendar isn't connected yet, so I can't see the real "
+                        "schedule for that day -- capture the customer's info and tell "
+                        "them someone will confirm the timing. (Vinny: connect Google "
+                        "Calendar in Settings to enable live availability.)"
+                    )
+                    crm.log_verification(avail_date, "Escalated", source="Google Calendar not connected")
+                elif result.get("removals"):
+                    slots = "; ".join(
+                        f"{r['time']} in the {r['area']} area" for r in result["removals"]
+                    )
+                    avail = "still an open slot" if result["available"] else "fully booked (2 removals already)"
+                    answer = f"On that day: {slots}. The day is {avail}."
+                    crm.log_verification(avail_date, "Ground Truth", source="Google Calendar (live)", detail=answer)
+                else:
+                    answer = "No removals booked that day yet -- both slots are open."
+                    crm.log_verification(avail_date, "Ground Truth", source="Google Calendar (live)", detail=answer)
+            elif block.name == "create_removal_event":
+                delegated_to.append("Calendar (booked)")
+                answer = gcal.create_removal_event(
+                    block.input.get("date", ""),
+                    block.input.get("area", ""),
+                    block.input.get("time", ""),
+                    block.input.get("customer_name", ""),
+                    block.input.get("customer_phone", ""),
+                )
+            elif block.name == "create_inspection_event":
+                delegated_to.append("Calendar (inspection booked)")
+                answer = gcal.create_inspection_event(
+                    block.input.get("date", ""),
+                    block.input.get("area", ""),
+                    block.input.get("time", ""),
+                    block.input.get("visit_type", ""),
+                    block.input.get("customer_name", ""),
+                    block.input.get("customer_phone", ""),
+                )
+            elif block.name == "get_vendor_events":
+                delegated_to.append("Events Tracker")
+                answer = vendor_events.list_upcoming_events(
+                    block.input.get("status", ""),
+                    block.input.get("search", ""),
+                )
+            elif block.name == "log_vendor_event":
+                delegated_to.append("Events Tracker")
+                answer = vendor_events.add_event(
+                    block.input.get("event", ""),
+                    block.input.get("date", ""),
+                    block.input.get("time", ""),
+                    block.input.get("location", ""),
+                    block.input.get("fee", ""),
+                    block.input.get("status", "TBD"),
+                    block.input.get("action_needed", ""),
+                    block.input.get("notes", ""),
+                )
+            elif block.name == "research_prospect":
+                delegated_to.append("Prospect Research")
+                company = block.input.get("company", "")
+                industry = block.input.get("industry", "")
+                search_queries = [
+                    f'"{company}" {industry} website logo brand colors',
+                    f'"{company}" reviews rating Google Yelp BBB Facebook Instagram',
+                    f"top {industry} small business software CRM automation tools 2024",
+                    f"{industry} small business pain points workflow challenges automation",
+                ]
+                search_parts = []
+                searches_used = 0
+                for sq in search_queries:
+                    if crm.get_search_count() + searches_used < get_search_cap():
+                        s_text, s_used = run_web_search(sq, active_model)
+                        search_parts.append(f"SEARCH: {sq}\n{s_text}")
+                        searches_used += s_used
+                if searches_used:
+                    crm.increment_search_count(searches_used)
+                    delegated_to.append("Web Search")
+                compiled = "\n\n---\n\n".join(search_parts) if search_parts else "No search results available."
+                briefing = (
+                    f"Research this prospect for Stinger Industries sales prep.\n\n"
+                    f"COMPANY: {company}\nINDUSTRY: {industry}\n\n"
+                    f"WEB SEARCH RESULTS:\n{compiled}"
+                )
+                raw = call_sub_agent("prospect_researcher", briefing, active_model)
+
+                def _pf(label, text):
+                    label_lower = label.lower()
+                    for line in text.splitlines():
+                        stripped = line.strip()
+                        if stripped.lower().startswith(f"{label_lower}:"):
+                            return stripped[len(label) + 1:].strip()
+                    log.warning("Prospect parser: field %r not found in AI output", label)
+                    return ""
+
+                logo = _pf("LOGO_URL", raw)
+                accent = _pf("ACCENT_COLOR", raw)
+                website = _pf("WEBSITE", raw)
+                save_result = prospects.create_prospect(
+                    company=_pf("COMPANY", raw) or company,
+                    industry=industry,
+                    website="" if website.lower() in ("not found", "unknown") else website,
+                    logo_url="" if logo.lower() in ("not found", "unknown") else logo,
+                    accent="" if accent.lower() in ("not found", "unknown") else accent,
+                    research_notes=(
+                        _pf("INDUSTRY_SUMMARY", raw)
+                        + "\n\nDigital footprint: " + (_pf("DIGITAL_FOOTPRINT", raw) or "none found")
+                        + "\nSEO audit: " + (_pf("SEO_AUDIT", raw) or "unknown")
+                        + "\nSales angle: " + (_pf("SALES_ANGLE", raw) or "")
+                        + "\n\n" + _pf("SUMMARY", raw)
+                    ).strip(),
+                    competitive_notes=_pf("COMPETITIVE_NOTES", raw),
+                    common_tools=_pf("COMMON_TOOLS", raw),
+                    pain_points=_pf("PAIN_POINTS", raw),
+                )
+                slug = save_result.get("slug", "")
+                demo_note = f"\n\nSaved to Prospects. Pre-branded demo ready at /demo/{slug}" if slug else ""
+                answer = raw + demo_note
+            elif block.name == "list_capabilities":
+                delegated_to.append("Skill Toolbox")
+                allowed = {t["name"] for t in tools}
+                answer = toolbox.render_text(allowed, block.input.get("topic", ""))
+            elif block.name == "scout_prospects":
+                delegated_to.append("Prospect Scout")
+                industry = block.input.get("industry", "")
+                area = block.input.get("area") or "Port St. Lucie, FL"
+                search_queries = [
+                    f"best {industry} companies {area}",
+                    f"{industry} {area} local family owned reviews rating",
+                ]
+                search_parts = []
+                searches_used = 0
+                for sq in search_queries:
+                    if crm.get_search_count() + searches_used < get_search_cap():
+                        s_text, s_used = run_web_search(sq, active_model)
+                        search_parts.append(f"SEARCH: {sq}\n{s_text}")
+                        searches_used += s_used
+                if searches_used:
+                    crm.increment_search_count(searches_used)
+                    delegated_to.append("Web Search")
+                if not search_parts:
+                    answer = (
+                        "Today's web-search cap is used up, so I can't scout new "
+                        "prospects right now. Try again tomorrow or raise the cap in Settings."
+                    )
+                else:
+                    compiled = "\n\n---\n\n".join(search_parts)
+                    briefing = (
+                        f"Scout local businesses for the Stinger Industries sales pipeline.\n\n"
+                        f"INDUSTRY: {industry}\nAREA: {area}\n\n"
+                        f"WEB SEARCH RESULTS:\n{compiled}"
+                    )
+                    answer = call_sub_agent("prospect_scout", briefing, active_model) + (
+                        "\n\nWant the full research card on any of these? Say "
+                        '"research <company name>" and I\'ll run it and save them to the pipeline.'
+                    )
+            elif block.name == "scrape_page":
+                delegated_to.append("Page Scrape")
+                answer = scrape_page_text(block.input.get("url", ""))
+            elif block.name == "run_seo_audit":
+                delegated_to.append("SEO Audit")
+                answer = seo_audit.run_audit(block.input.get("url", ""))
+            elif block.name == "list_prospects":
+                delegated_to.append("Prospects Pipeline")
+                answer = prospects.find_prospects(
+                    search=block.input.get("search", ""),
+                    status=block.input.get("status", ""),
+                )
+            elif block.name == "get_client_strategy":
+                delegated_to.append("Client Strategy")
+                client_name = block.input.get("client", "")
+                rows = crm.get_strategy(client_name)
+                if not rows:
+                    # Say nothing is stored rather than let her fill the gap
+                    # with a plausible-sounding strategy she invented.
+                    answer = (
+                        f"No stored strategy for '{client_name}'. Do not improvise one -- "
+                        "tell the owner nothing is on file for this company and offer to "
+                        "research them or have a strategy pushed in."
+                    )
+                else:
+                    parts = []
+                    for row in rows:
+                        parts.append(
+                            f"=== {row['client']} / {row['kind']} "
+                            f"(priority: {row['priority']}, updated: {row['updated_at']}) ===\n"
+                            f"{row['content']}"
+                        )
+                    answer = "\n\n".join(parts)
+            elif block.name == "push_lead_to_hubspot":
+                delegated_to.append("HubSpot CRM")
+                if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
+                    answer = "HubSpot isn't connected yet. Set HUBSPOT_ACCESS_TOKEN in Render environment variables. See HUBSPOT_SETUP_GUIDE.md for full instructions."
+                else:
+                    try:
+                        result = hubspot.capture_lead(
+                            name=block.input.get("name", ""),
+                            email=block.input.get("email", ""),
+                            phone=block.input.get("phone", ""),
+                            company=block.input.get("company", ""),
+                            service=block.input.get("service", ""),
+                            notes=block.input.get("notes", ""),
+                            deal_amount=block.input.get("deal_amount"),
+                            deal_stage=block.input.get("deal_stage", ""),
+                        )
+                        answer = (
+                            f"Pushed to HubSpot. Contact ID: {result['contact']['id']}, "
+                            f"Deal ID: {result['deal']['id']}."
+                        )
+                    except Exception as e:
+                        answer = f"HubSpot error: {e}"
+            elif block.name == "search_hubspot_contact":
+                delegated_to.append("HubSpot CRM")
+                if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
+                    answer = "HubSpot isn't connected yet. Set HUBSPOT_ACCESS_TOKEN in Render environment variables. See HUBSPOT_SETUP_GUIDE.md for full instructions."
+                else:
+                    try:
+                        results = hubspot.search_contacts(
+                            query=block.input.get("query", ""),
+                            limit=5,
+                        )
+                        if not results:
+                            answer = "No matching contacts found in HubSpot."
+                        else:
+                            lines = []
+                            for c in results:
+                                line = f"• {c['name']} (ID: {c['id']})"
+                                if c["email"]: line += f" — {c['email']}"
+                                if c["phone"]: line += f" — {c['phone']}"
+                                if c["status"]: line += f" — Status: {c['status']}"
+                                lines.append(line)
+                            answer = "HubSpot contacts found:\n" + "\n".join(lines)
+                    except Exception as e:
+                        answer = f"HubSpot search error: {e}"
+            elif block.name == "update_hubspot_contact":
+                delegated_to.append("HubSpot CRM")
+                if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
+                    answer = "HubSpot isn't connected yet. Set HUBSPOT_ACCESS_TOKEN in Render environment variables. See HUBSPOT_SETUP_GUIDE.md for full instructions."
+                else:
+                    try:
+                        contact_id = block.input.get("contact_id", "")
+                        props = {k: v for k, v in block.input.items()
+                                 if k != "contact_id" and v}
+                        hubspot.update_contact(contact_id, **props)
+                        answer = f"HubSpot contact {contact_id} updated."
+                    except Exception as e:
+                        answer = f"HubSpot update error: {e}"
+            elif block.name == "update_hubspot_deal_stage":
+                delegated_to.append("HubSpot CRM")
+                if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
+                    answer = "HubSpot isn't connected yet. Set HUBSPOT_ACCESS_TOKEN in Render environment variables. See HUBSPOT_SETUP_GUIDE.md for full instructions."
+                else:
+                    try:
+                        hubspot.update_deal_stage(
+                            deal_id=block.input.get("deal_id", ""),
+                            stage=block.input.get("stage", ""),
+                        )
+                        answer = f"Deal {block.input.get('deal_id')} moved to stage '{block.input.get('stage')}'."
+                    except Exception as e:
+                        answer = f"HubSpot deal update error: {e}"
+            elif block.name == "get_hubspot_deals":
+                delegated_to.append("HubSpot CRM")
+                if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
+                    answer = "HubSpot isn't connected yet. Set HUBSPOT_ACCESS_TOKEN in Render environment variables. See HUBSPOT_SETUP_GUIDE.md for full instructions."
+                else:
+                    try:
+                        deals = hubspot.get_deals(
+                            limit=block.input.get("limit", 10),
+                            stage=block.input.get("stage", ""),
+                        )
+                        if not deals:
+                            answer = "No deals found in HubSpot."
+                        else:
+                            lines = []
+                            for d in deals:
+                                line = f"• {d['name']} (ID: {d['id']}) — Stage: {d['stage']}"
+                                if d["amount"]: line += f" — ${d['amount']}"
+                                lines.append(line)
+                            answer = "HubSpot deals:\n" + "\n".join(lines)
+                    except Exception as e:
+                        answer = f"HubSpot deals error: {e}"
+            elif block.name == "get_buildertrend_jobs":
+                delegated_to.append("Buildertrend")
+                if not os.environ.get("BUILDERTREND_ACCESS_TOKEN"):
+                    answer = "Buildertrend isn't connected yet — add BUILDERTREND_ACCESS_TOKEN to the Render environment."
+                else:
+                    try:
+                        job_id = block.input.get("job_id")
+                        if job_id:
+                            job = buildertrend.get_job(job_id)
+                            milestones = buildertrend.list_milestones(job_id)
+                            answer = f"Job: {job}\n\nMilestones: {milestones}"
+                        else:
+                            jobs = buildertrend.get_jobs(block.input.get("status", "Active"))
+                            answer = f"Active jobs ({len(jobs)}): " + ", ".join(
+                                f"{j.get('name', j.get('id', '?'))}" for j in jobs[:10]
+                            )
+                    except Exception as e:
+                        answer = f"Buildertrend error: {e}"
+            elif block.name == "send_buildertrend_message":
+                delegated_to.append("Buildertrend (message sent)")
+                if not os.environ.get("BUILDERTREND_ACCESS_TOKEN"):
+                    answer = "Buildertrend isn't connected yet."
+                else:
+                    try:
+                        result = buildertrend.send_message(
+                            block.input.get("job_id", ""),
+                            block.input.get("subject", ""),
+                            block.input.get("body", ""),
+                        )
+                        answer = f"Message sent via Buildertrend client portal. Result: {result}"
+                    except Exception as e:
+                        answer = f"Buildertrend message error: {e}"
+            elif block.name == "create_lightspeed_invoice":
+                delegated_to.append("Lightspeed Billing")
+                if not lightspeed.is_configured():
+                    answer = "Lightspeed isn't connected yet — add LIGHTSPEED_ACCESS_TOKEN and LIGHTSPEED_BUSINESS_ID to Render."
+                else:
+                    try:
+                        result = lightspeed.bill_client(
+                            name=block.input.get("name", ""),
+                            email=block.input.get("email", ""),
+                            phone=block.input.get("phone", ""),
+                            line_items=block.input.get("items", []),
+                            note=block.input.get("note", ""),
+                        )
+                        cust_id = result["customer"].get("customerID") or result["customer"].get("id", "?")
+                        sale_id = result["sale"].get("saleID") or result["sale"].get("id", "?")
+                        answer = f"Invoice created in Lightspeed. Customer ID: {cust_id}, Sale ID: {sale_id}."
+                    except Exception as e:
+                        answer = f"Lightspeed error: {e}"
+            elif block.name == "list_lightspeed_invoices":
+                delegated_to.append("Lightspeed Billing")
+                if not lightspeed.is_configured():
+                    answer = "Lightspeed isn't connected yet."
+                else:
+                    try:
+                        invoices = lightspeed.list_invoices(
+                            customer_id=block.input.get("customer_id", ""),
+                            limit=block.input.get("limit", 20),
+                        )
+                        if not invoices:
+                            answer = "No invoices found."
+                        else:
+                            lines = []
+                            for inv in invoices[:10]:
+                                sid = inv.get("saleID") or inv.get("id", "?")
+                                total = inv.get("total", "?")
+                                status = inv.get("completed", "?")
+                                lines.append(f"Sale {sid} — ${total} — completed: {status}")
+                            answer = f"{len(invoices)} invoice(s):\n" + "\n".join(lines)
+                    except Exception as e:
+                        answer = f"Lightspeed error: {e}"
+            elif block.name == "record_lightspeed_payment":
+                delegated_to.append("Lightspeed Billing")
+                if not lightspeed.is_configured():
+                    answer = "Lightspeed isn't connected yet."
+                else:
+                    try:
+                        result = lightspeed.create_payment(
+                            sale_id=block.input.get("sale_id", ""),
+                            amount=block.input.get("amount", 0),
+                            method=block.input.get("method", "Credit Card"),
+                            notes=block.input.get("notes", ""),
+                        )
+                        pid = result.get("salePaymentID") or result.get("id", "?")
+                        answer = f"Payment recorded in Lightspeed. Payment ID: {pid}."
+                    except Exception as e:
+                        answer = f"Lightspeed payment error: {e}"
+            elif block.name == "create_stripe_payment_link":
+                delegated_to.append("Stripe")
+                if not stripe_billing.is_configured():
+                    answer = "Stripe isn't connected yet — add STRIPE_SECRET_KEY to Render to activate online payment links."
+                else:
+                    try:
+                        result = stripe_billing.create_payment_link(
+                            customer_name=block.input.get("customer_name", ""),
+                            customer_email=block.input.get("customer_email", ""),
+                            customer_phone=block.input.get("customer_phone", ""),
+                            line_items=block.input.get("line_items", []),
+                        )
+                        answer = f"Stripe payment link created: {result['url']} — share this link with the client and they can pay by card instantly."
+                    except Exception as e:
+                        answer = f"Stripe error creating payment link: {e}"
+            elif block.name == "create_stripe_invoice":
+                delegated_to.append("Stripe")
+                if not stripe_billing.is_configured():
+                    answer = "Stripe isn't connected yet — add STRIPE_SECRET_KEY to Render to activate Stripe invoicing."
+                else:
+                    try:
+                        invoice = stripe_billing.create_invoice(
+                            customer_name=block.input.get("customer_name", ""),
+                            customer_email=block.input.get("customer_email", ""),
+                            customer_phone=block.input.get("customer_phone", ""),
+                            line_items=block.input.get("line_items", []),
+                            due_days=block.input.get("due_days", 7),
+                            memo=block.input.get("memo", ""),
+                            auto_send=True,
+                        )
+                        url = invoice.get("hosted_invoice_url", "")
+                        inv_id = invoice.get("id", "?")
+                        answer = f"Stripe invoice {inv_id} created and emailed to the client. They can view and pay it here: {url}"
+                    except Exception as e:
+                        answer = f"Stripe error creating invoice: {e}"
+            elif block.name == "list_stripe_invoices":
+                delegated_to.append("Stripe")
+                if not stripe_billing.is_configured():
+                    answer = "Stripe isn't connected yet — add STRIPE_SECRET_KEY to Render."
+                else:
+                    try:
+                        invoices = stripe_billing.list_invoices(
+                            customer_email=block.input.get("customer_email", ""),
+                            limit=block.input.get("limit", 20),
+                        )
+                        if not invoices:
+                            answer = "No Stripe invoices found."
+                        else:
+                            lines = []
+                            for inv in invoices[:10]:
+                                amt = inv.get("amount_due", 0) / 100
+                                status = inv.get("status", "unknown")
+                                cust = inv.get("customer_email") or inv.get("customer_name") or "unknown"
+                                lines.append(f"${amt:.2f} — {status} — {cust} — {inv.get('id','')}")
+                            answer = "Recent Stripe invoices:\n" + "\n".join(lines)
+                    except Exception as e:
+                        answer = f"Stripe error listing invoices: {e}"
+            elif block.name == "send_proposal_docusign":
+                delegated_to.append("DocuSign")
+                if not os.environ.get("DOCUSIGN_ACCESS_TOKEN"):
+                    answer = "DocuSign isn't connected yet — add DOCUSIGN_ACCESS_TOKEN, DOCUSIGN_ACCOUNT_ID, and DOCUSIGN_BASE_URL to Render."
+                else:
+                    try:
+                        from . import docusign_helper as ds
+                        env_id = ds.send_proposal_for_signature(
+                            signer_name=block.input.get("signer_name", ""),
+                            signer_email=block.input.get("signer_email", ""),
+                            signer_phone=block.input.get("signer_phone", ""),
+                            document_html=block.input.get("document_html", ""),
+                            document_name=block.input.get("document_name", "Proposal"),
+                            email_subject=block.input.get("email_subject", "Your proposal is ready to sign"),
+                        )
+                        answer = f"DocuSign envelope sent. Envelope ID: {env_id}. The client will receive an email to sign."
+                    except Exception as e:
+                        answer = f"DocuSign error: {e}"
+            elif block.name == "list_dropbox_folder":
+                delegated_to.append("Dropbox")
+                try:
+                    entries = files_dropbox.list_folder(block.input.get("path", ""))
+                    answer = json.dumps(entries, default=str) if entries else "Folder is empty."
+                except Exception as e:
+                    answer = f"Dropbox error: {e}"
+            elif block.name == "search_dropbox":
+                delegated_to.append("Dropbox")
+                try:
+                    hits = files_dropbox.search(block.input.get("query", ""))
+                    answer = json.dumps(hits, default=str) if hits else "No Dropbox matches."
+                except Exception as e:
+                    answer = f"Dropbox search error: {e}"
+            elif block.name == "save_dropbox_file":
+                delegated_to.append("Dropbox → Asset Library")
+                try:
+                    answer = files_dropbox.save_to_asset_library(
+                        block.input.get("path", ""),
+                        block.input.get("name", ""),
+                        block.input.get("tags", ""),
+                    )
+                except Exception as e:
+                    answer = f"Dropbox save error: {e}"
+            elif block.name == "list_drive_files":
+                delegated_to.append("Google Drive")
+                try:
+                    files = files_gdrive.list_files(block.input.get("folder_id", ""))
+                    answer = json.dumps(files, default=str) if files else "No files."
+                except Exception as e:
+                    answer = f"Drive error: {e}"
+            elif block.name == "search_drive":
+                delegated_to.append("Google Drive")
+                try:
+                    hits = files_gdrive.search(block.input.get("query", ""))
+                    answer = json.dumps(hits, default=str) if hits else "No Drive matches."
+                except Exception as e:
+                    answer = f"Drive search error: {e}"
+            elif block.name == "save_drive_file":
+                delegated_to.append("Google Drive → Asset Library")
+                try:
+                    answer = files_gdrive.save_to_asset_library(
+                        block.input.get("file_id", ""),
+                        block.input.get("name", ""),
+                        block.input.get("tags", ""),
+                    )
+                except Exception as e:
+                    answer = f"Drive save error: {e}"
+            elif block.name == "run_diagnostic":
+                delegated_to.append("Diagnostic")
+                report = diagnostic.run_all()
+                lines = [f"System status: {report['summary'].upper()} "
+                         f"({report['counts']['green']} ok, "
+                         f"{report['counts']['red']} failing, "
+                         f"{report['counts']['unconfigured']} unconfigured, "
+                         f"{report['counts']['total']} total)."]
+                for s in report["services"]:
+                    if s.get("ok") is False:
+                        lines.append(f"  FAIL {s['name']}: {s.get('error') or 'probe failed'} — {s.get('hint') or ''}")
+                    elif s.get("ok") is True:
+                        lat = s.get("latency_ms")
+                        lines.append(f"  OK   {s['name']}" + (f" ({lat} ms)" if lat is not None else ""))
+                    elif not s.get("configured"):
+                        lines.append(f"  --   {s['name']}: not configured — {s.get('hint') or ''}")
+                    else:
+                        lines.append(f"  ?    {s['name']}: configured, not actively probed")
+                lines.append("Full board: /diagnostic")
+                answer = "\n".join(lines)
+            elif block.name == "ask_seo_auditor":
+                delegated_to.append("SEO Auditor")
+                audit_text = block.input.get("audit_results", "")
+                context = block.input.get("prospect_context", "")
+                brief = f"Audit results:\n{audit_text}\n\nContext: {context}"
+                answer = call_sub_agent("seo_auditor", brief)
+            elif block.name == "search_gis_parcel":
+                delegated_to.append("GIS Lookup")
+                from . import gis
+                address = block.input.get("address", "")
+                county = block.input.get("county", "")
+                result = gis.lookup_parcel(address, county)
+                answer = str(result)
+            elif block.name == "ask_pricing_advisor":
+                # Deterministic lookup, not a model call -- the figure returned
+                # is always exactly what's in pricing_data.PRICING, so it can't
+                # be rounded, transposed, or invented in transit.
+                delegated_to.append("Pricing Advisor")
+                pricing_query = block.input.get("query", "")
+                answer = pricing_data.lookup(pricing_query)
+                crm.log_verification(pricing_query, "Ground Truth", source="pricing_data.py catalog", detail=answer)
+            elif block.name == "flag_for_review":
+                delegated_to.append("Escalated")
+                flag_question = block.input.get("question", "")
+                flag_reason = block.input.get("reason", "")
+                crm.log_verification(flag_question, "Escalated", source="Annabelle self-flagged", detail=flag_reason)
+                answer = "Flagged for the team to review and follow up on -- no answer given until it's confirmed."
             elif agent_key is None:
                 answer = f"Unknown tool: {block.name}"
             else:
                 delegated_to.append(SUB_AGENTS[agent_key]["name"])
-                query = block.input.get("query", user_message)
-                answer = call_sub_agent(agent_key, query)
+                query = block.input.get("query") or block.input.get("briefing", user_message)
+                answer = call_sub_agent(agent_key, query, active_model)
                 if answer.strip().startswith("NEEDS_SEARCH:"):
                     search_query = answer.split("NEEDS_SEARCH:", 1)[1].strip()
                     if search_available and crm.get_search_count() < get_search_cap():
-                        search_text, used = run_web_search(search_query)
+                        search_text, used = run_web_search(search_query, active_model)
                         if used:
                             crm.increment_search_count(used)
                             delegated_to.append("Web Search")
-                        answer = call_sub_agent(
-                            agent_key,
-                            f"{query}\n\nHere is current web search information you can use:\n{search_text}",
-                        )
+                        # Tier 2 discipline: a search that came back empty (or
+                        # near-empty) gives the sub-agent nothing real to ground
+                        # an answer in -- re-asking it anyway risks it filling
+                        # the gap with something plausible-sounding instead of
+                        # honestly saying it doesn't know. Escalate instead.
+                        if len((search_text or "").strip()) < 40:
+                            answer = (
+                                "I don't have reliable, current information to answer that "
+                                "accurately -- I've flagged it for Vinny to follow up on "
+                                "rather than guess."
+                            )
+                            crm.log_verification(search_query, "Escalated", source="Web search returned nothing usable")
+                        else:
+                            from datetime import date as _date
+                            search_context = (
+                                f"[WEB SEARCH RESULT — retrieved {_date.today()} — "
+                                "may be outdated or inaccurate. Cite the source when "
+                                "presenting this information to the user.]\n\n"
+                                + search_text
+                            )
+                            answer = call_sub_agent(
+                                agent_key,
+                                f"{query}\n\nHere is current web search information you can use:\n{search_context}",
+                                active_model,
+                            )
+                            crm.log_verification(search_query, "Verified", source="Web search", detail=search_text[:1500])
                     else:
                         answer = (
                             "I don't have live search access for that right now (the search "
-                            "budget is capped for this period) -- Vinny will need to raise "
+                            "budget is capped for this period) -- Vinny, you'll need to raise "
                             "the cap or check back next cycle."
                         )
+                        crm.log_verification(search_query, "Escalated", source="Search budget capped")
+                # Auto quality-review: proposals and audits pass through the reviewer
+                # before reaching Vinny. If reviewer returns REVISED:, use the improved doc.
+                if agent_key in ("proposal_writer", "audit_writer") and not answer.strip().startswith("NEEDS_SEARCH:"):
+                    try:
+                        delegated_to.append("Proposal Quality Reviewer")
+                        review = call_sub_agent("proposal_reviewer", answer, active_model)
+                        if review.strip().startswith("REVISED:"):
+                            answer = review.strip()[len("REVISED:"):].strip()
+                    except Exception as e:
+                        log.warning("Proposal reviewer failed: %s", e)
+                        answer = (
+                            "⚠ REVIEW SKIPPED — The automatic accuracy check "
+                            "failed due to a system error. Verify this proposal "
+                            "manually before sending to the client.\n\n"
+                            + answer
+                        )
+                # Long-form documents get a durable, shareable link -- the
+                # Artifacts panel is otherwise permanently empty since these
+                # tools only ever returned inline text before.
+                if agent_key in ("proposal_writer", "audit_writer", "content_writer") and not answer.strip().startswith("NEEDS_SEARCH:"):
+                    doc_title = (
+                        block.input.get("prospect_name") or block.input.get("company")
+                        or block.input.get("content_type") or block.input.get("client_name")
+                        or {"proposal_writer": "Proposal", "audit_writer": "Opportunity Audit",
+                            "content_writer": "Content"}[agent_key]
+                    )
+                    slug = crm.create_artifact(doc_title, answer)
+                    if slug:
+                        artifact_url = f"/artifact/{slug}"
+                        artifact_title = doc_title
             tool_results.append(
                 {
                     "type": "tool_result",
@@ -508,56 +1840,646 @@ def run_main_brain(user_message: str, history: List[Dict[str, str]],
         timings["tools"] = round(timings["tools"] + (time.perf_counter() - _tt), 3)
 
     timings["total"] = round(time.perf_counter() - _t0, 3)
-    return ChatResponse(
-        reply="Sorry, I got stuck coordinating that -- try rephrasing your question.",
+    # Ran out of tool rounds. If she narrated anything usable along the way,
+    # that's a better answer than the generic apology.
+    stuck_text = "".join(spoken_so_far).strip() or (
+        "Sorry, I got stuck coordinating that -- try rephrasing your question."
+    )
+    yield {"type": "done", "response": ChatResponse(
+        reply=stuck_text,
         delegated_to=delegated_to,
         timings=timings,
-    )
+        artifact_url=artifact_url,
+        artifact_title=artifact_title,
+        speaker_name=speaker_name,
+    )}
+
+
+def run_main_brain(user_message: str, history: List[Dict[str, str]],
+                   system_prompt: str = MAIN_BRAIN_SYSTEM_PROMPT,
+                   tools=DELEGATION_TOOLS, enable_search: bool = False,
+                   persona: str = "owner", file: Optional["FileAttachment"] = None,
+                   request_id: str = "", model: str = "", chat_id: str = "") -> ChatResponse:
+    """Blocking form: drain the event stream, hand back the final response.
+    Kept so /api/public-chat and the widget keep working exactly as before."""
+    final: Optional[ChatResponse] = None
+    for ev in _run_main_brain_events(user_message, history, system_prompt, tools,
+                                     enable_search, persona, file, request_id, model, chat_id):
+        if ev["type"] == "done":
+            final = ev["response"]
+    if final is None:  # generator exhausted without a done event -- shouldn't happen
+        final = ChatResponse(reply="Sorry, something went wrong composing that reply.", delegated_to=[])
+    return final
+
+
+class StopChatRequest(BaseModel):
+    request_id: str = ""
+
+
+@app.post("/api/chat/stop")
+def stop_chat(req: StopChatRequest) -> JSONResponse:
+    """Client-side Stop button. Marks a request_id cancelled so run_main_brain
+    bails before its next Anthropic call or tool execution instead of running
+    the full (possibly slow) turn to completion. Not gated -- worst case
+    someone cancels a request_id that isn't theirs, which does nothing harmful."""
+    _mark_cancelled(req.request_id[:100])
+    return JSONResponse({"ok": True})
+
+
+def _get_learning_injection() -> str:
+    """Return a compact learning note from the latest test run report."""
+    try:
+        from .test_learning_system import TestLearningSystem
+        tls = TestLearningSystem()
+        report = tls.get_learning_report()
+        if not report:
+            return ""
+        # Summarize for the system prompt — compact, actionable
+        parts = []
+        if report.performance_summary:
+            parts.append(f"Test performance: {report.performance_summary}")
+        if report.improvement_areas:
+            areas = "; ".join(report.improvement_areas[:3])
+            parts.append(f"Current improvement focus: {areas}.")
+        if report.failure_patterns:
+            top = report.failure_patterns[0]
+            parts.append(f"Most common failure pattern: {top.get('description', 'unknown')} — address proactively.")
+        if not parts:
+            return ""
+        note = "\n\n[LEARNING UPDATE] " + " ".join(parts)
+        return note
+    except Exception:
+        return ""
+
+
+def _get_update_injection() -> str:
+    """Return a system-level update note if Annabelle has new improvements to announce."""
+    import json as _json
+    updates_path = os.path.join(os.path.dirname(__file__), "annabelle_updates.json")
+    try:
+        with open(updates_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        current_version = data.get("version", "")
+        announced = data.get("announced_version", "")
+        if current_version and current_version != announced:
+            all_updates = data.get("updates", [])
+            total_updates = sum(len(u.get("changes", [])) for u in all_updates)
+            latest = all_updates[0] if all_updates else {}
+            changes = latest.get("changes", [])
+            changes_list = "\n".join(f"  - {c}" for c in changes)
+            total_versions = len(all_updates)
+            note = (
+                f"\n\n[SYSTEM UPDATE — v{current_version} — {latest.get('date', 'today')}]\n"
+                f"You have been updated and improved. This is improvement version {current_version}. "
+                f"Across {total_versions} update sessions, you have received {total_updates} individual improvements. "
+                f"You are getting smarter and more reliable with every session.\n"
+                f"Latest changes:\n{changes_list}\n"
+                f"You may mention this update naturally to Vinny once at the start of this session "
+                f"(e.g. 'I got some updates since we last talked') — but do not repeat it every turn. "
+                f"Do not say 'SYSTEM UPDATE' verbatim — just mention it conversationally."
+            )
+            # Mark as announced (best-effort, non-blocking)
+            try:
+                data["announced_version"] = current_version
+                with open(updates_path, "w", encoding="utf-8") as f:
+                    _json.dump(data, f, indent=2)
+            except Exception:
+                pass
+            return note
+    except Exception:
+        pass
+    return ""
+
+
+def _owner_chat_setup(req: ChatRequest):
+    """System prompt + tool set for an owner turn, derived from the active mode.
+    Shared by /api/chat and /api/chat/stream so the two can never drift."""
+    update_note = (_get_update_injection() + _get_learning_injection()) if not req.history else ""
+    sys_prompt = build_main_brain_prompt(_current_agent_name()) + get_automation_level_prompt(get_automation_level()) + update_note
+    tools = config_check.filter_tools(DELEGATION_TOOLS)
+    if req.mode in MODE_TOOLS:
+        tools = [t for t in tools if t["name"] in MODE_TOOLS[req.mode]]
+        sys_prompt += MODE_PROMPTS[req.mode]
+    return sys_prompt, tools
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
-    result = run_main_brain(req.message, req.history, enable_search=True, persona="owner")
+def chat(req: ChatRequest, request: Request) -> ChatResponse:
+    req.clean()
+    sys_prompt, tools = _owner_chat_setup(req)
+    try:
+        result = run_main_brain(req.message, req.history, sys_prompt, tools, enable_search=True,
+                                 persona="owner", file=req.file, request_id=req.request_id,
+                                 model=req.model, chat_id=_scoped_chat_id(request, req.chat_id))
+    finally:
+        _clear_cancelled(req.request_id)
+    if result.reply == STOPPED_REPLY:
+        return result
     # Persist the exchange to durable memory (Airtable) in the background --
-    # the user shouldn't wait on bookkeeping after the reply is ready.
+    # measured at ~1.3s on production, and the user shouldn't wait on
+    # bookkeeping after the reply is already composed.
     _ts = time.perf_counter()
-
-    def _persist(user_msg: str, reply: str) -> None:
-        crm.save_turn("user", user_msg)
-        crm.save_turn("assistant", reply)
-
-    threading.Thread(target=_persist, args=(req.message, result.reply), daemon=True).start()
+    _persist_turn(request, req, result)
     result.timings["save"] = round(time.perf_counter() - _ts, 3)
     return result
 
 
-@app.get("/api/history")
-def history(limit: int = 40) -> JSONResponse:
-    """Return recent conversation turns from durable memory (oldest first)."""
-    return JSONResponse({"history": crm.get_history(limit)})
+def _persist_turn(request: Request, req: ChatRequest, result: ChatResponse) -> None:
+    """Background-save the exchange and sync the active speaker back to the
+    client. Same bookkeeping /api/chat has always done, lifted out so the
+    streaming endpoint does it identically."""
+    def _persist(user_msg: str, reply: str, chat_id: str, speaker: str) -> None:
+        crm.save_turn("user", user_msg, chat_id, speaker)
+        crm.save_turn("assistant", reply, chat_id, speaker)
+
+    scoped_chat_id = _scoped_chat_id(request, req.chat_id)
+    effective_speaker = result.speaker_name if result.speaker_name is not None else req.speaker
+    result.speaker_name = effective_speaker
+    threading.Thread(target=_persist,
+                     args=(req.message, result.reply, scoped_chat_id, effective_speaker),
+                     daemon=True).start()
 
 
-@app.get("/api/events")
-def get_events(business: str = "") -> JSONResponse:
-    """Owner-only. List events, optionally filtered to one side of the business."""
-    return JSONResponse({"events": events.list_events_raw(business)})
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
+    """Server-Sent Events form of /api/chat.
 
+    Same inputs, same work, same bookkeeping -- the difference is that text
+    reaches the browser token-by-token, so the client can start speaking the
+    first sentence while the rest is still being written. /api/chat stays as
+    it is for the public widget and as a fallback if this ever fails.
 
-@app.get("/api/assets")
-def get_assets() -> JSONResponse:
-    """Owner-only. The media library, newest first.
-
-    Susan's assistant saves photos and clips as she shares them, but until now
-    there was no way to SEE what had been saved -- only to ask for it by name.
-    The Media tab reads this.
+    Event stream (one JSON object per `data:` line):
+      {"type":"text","text":...}   append to the bubble; feed the speech queue
+      {"type":"tool","name":...}   a sub-agent fired, for the live log
+      {"type":"done","response":{...ChatResponse...}}
+      {"type":"error","message":...}
     """
-    return JSONResponse({"assets": assets.list_assets_raw()})
+    req.clean()
+    sys_prompt, tools = _owner_chat_setup(req)
+
+    def event_source():
+        result: Optional[ChatResponse] = None
+        try:
+            for ev in _run_main_brain_events(req.message, req.history, sys_prompt, tools,
+                                             enable_search=True, persona="owner", file=req.file,
+                                             request_id=req.request_id, model=req.model,
+                                             chat_id=_scoped_chat_id(request, req.chat_id)):
+                if ev["type"] == "done":
+                    result = ev["response"]
+                    if result.reply != STOPPED_REPLY:
+                        _ts = time.perf_counter()
+                        _persist_turn(request, req, result)
+                        result.timings["save"] = round(time.perf_counter() - _ts, 3)
+                    yield "data: " + json.dumps({"type": "done", "response": result.model_dump()}) + "\n\n"
+                else:
+                    yield "data: " + json.dumps(ev) + "\n\n"
+        except Exception as e:
+            logging.exception("chat_stream failed")
+            yield "data: " + json.dumps({"type": "error", "message": f"{type(e).__name__}: {e}"}) + "\n\n"
+        finally:
+            _clear_cancelled(req.request_id)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # stop any proxy from buffering the stream flat
+            "Connection": "keep-alive",
+        },
+    )
 
 
-@app.get("/api/social_posts")
-def get_social_posts() -> JSONResponse:
-    """Owner-only. Social drafts and published posts, newest first."""
-    return JSONResponse({"posts": social.list_posts_raw()})
+@app.get("/api/history")
+def history(request: Request, limit: int = 40, chat_id: str = "default") -> JSONResponse:
+    """Return recent conversation turns from durable memory (oldest first),
+    scoped to whoever is logged in so different accounts never see each
+    other's conversation.
+
+    If we can't identify the account, say so rather than returning an empty
+    list -- an empty list is indistinguishable from "you have no history" and
+    is what made the memory-loss bug invisible."""
+    scoped = _scoped_chat_id_checked(request, chat_id)
+    if scoped is None:
+        return JSONResponse(
+            {"history": [], "authed": False,
+             "detail": "Session expired -- sign in again to load this conversation."},
+            status_code=401)
+    return JSONResponse({"history": crm.get_history(limit, scoped), "authed": True})
+
+
+@app.get("/api/memory/health")
+def memory_health(request: Request, chat_id: str = "default") -> JSONResponse:
+    """Live snapshot of memory persistence: is Airtable reachable, how many
+    turns are stored for this chat_id, when was the last successful save/load,
+    and if something failed, WHY. Owner-only (behind the access gate)."""
+    chat_id = _scoped_chat_id(request, chat_id)
+    stats = crm.memory_stats()
+    turns = crm.get_history(200, chat_id)  # actual round-trip verifies reachability
+    stats["airtable_configured"] = crm.is_configured()
+    stats["airtable_reachable"] = stats["last_load_ok_ts"] is not None and (
+        stats["last_load_err_ts"] is None
+        or stats["last_load_ok_ts"] > stats["last_load_err_ts"]
+    )
+    stats["chat_id"] = chat_id
+    stats["turn_count"] = len(turns)
+    return JSONResponse(stats)
+
+
+@app.get("/healthz")
+def healthz() -> JSONResponse:
+    """Tiny uptime probe. Public, no auth, no side effects. Returns 200 as
+    long as the FastAPI worker is alive. UptimeRobot / any external monitor
+    should hit this every 5 minutes."""
+    return JSONResponse({"ok": True, "ts": datetime.now(timezone.utc).isoformat()})
+
+
+@app.post("/api/chats/create")
+def create_chat(request: Request, name: str = "New Chat") -> JSONResponse:
+    """Create a new named chat session and return the chat_id, scoped to
+    whoever is logged in."""
+    owner = _authed_username(request) or "shared"
+    chat_id = crm.create_chat_session(name, owner)
+    return JSONResponse({"chat_id": chat_id, "name": name})
+
+
+@app.get("/api/chats/list")
+def list_chats(request: Request) -> JSONResponse:
+    """Return chat sessions belonging to whoever is logged in, newest first."""
+    owner = _authed_username(request) or "shared"
+    return JSONResponse({"chats": crm.get_chat_sessions(owner)})
+
+
+@app.get("/api/toolbox")
+def get_toolbox() -> JSONResponse:
+    """Skill Toolbox cards for the dashboard -- every owner-mode capability
+    with a friendly title, group, and example trigger phrases. Generated from
+    DELEGATION_TOOLS so new skills self-register."""
+    return JSONResponse({"cards": toolbox.get_cards()})
+
+
+# ── Content Creation panel ───────────────────────────────────────────────────
+# social.py has had drafting, the review queue and Zapier publishing since day
+# one, and media_gen.py has had image/video generation -- but all of it was only
+# reachable as Annabelle's chat tools. There were no HTTP endpoints, so the
+# dashboard couldn't offer any of it. These wrap the existing functions; the
+# behaviour (caps, media-required platforms, draft-then-approve) is unchanged.
+
+_CONTENT_WRITER_SYSTEM = """You write social media copy for Vinny's two real businesses.
+
+Ohh Beehave -- live bee removal, hive relocation, apiary and apothecary products
+(honey, candles, soaps), inspections. Local, hands-on, South Florida.
+Stinger Industries -- AI command centers for small businesses.
+
+Rules:
+- Write in a warm, plain, human voice. No corporate filler, no hype stacking,
+  no emoji walls (one or two is fine where it genuinely helps).
+- NEVER invent statistics, review counts, years in business, customer numbers,
+  prices, or awards. If a number would strengthen the post, leave a clearly
+  marked [VERIFY: ...] placeholder instead of guessing. Made-up numbers about a
+  real business are the single worst failure here.
+- No claims about being licensed, insured, certified, or #1 unless the topic
+  the owner gave you explicitly says so.
+
+Reply in EXACTLY this format, nothing before or after:
+CONTENT:
+<the post body>
+HASHTAGS:
+<space-separated hashtags, or leave blank if they don't suit the platform>"""
+
+_PLATFORM_SHAPE = {
+    "X": "one tight post under 280 characters",
+    "Facebook": "2-3 short paragraphs, conversational",
+    "Instagram": "2-3 short paragraphs, no clickable links (they don't work in captions)",
+    "TikTok": "a spoken hook in the first line, then 3-5 short beats for the voiceover",
+    "YouTube": "a title line, then a 3-4 sentence description",
+}
+
+
+class ContentWriteIn(BaseModel):
+    platform: str = ""
+    topic: str = ""
+    tone: str = ""
+
+
+class ContentDraftIn(BaseModel):
+    platform: str = ""
+    content: str = ""
+    title: str = ""
+    hashtags: str = ""
+    media_url: str = ""
+
+
+class ContentPublishIn(BaseModel):
+    post_id: str = ""
+
+
+class ContentMediaIn(BaseModel):
+    prompt: str = ""
+    aspect_ratio: str = ""
+    duration: int = 8
+    image_url: str = ""
+
+
+@app.get("/api/content/overview")
+def content_overview(status: str = "", limit: int = 25) -> JSONResponse:
+    """Everything the Content panel needs in one call: what's connected, where
+    the media spend caps stand, and the current review queue."""
+    return JSONResponse({
+        "queue_configured": crm.is_configured(),
+        "publishing_configured": social.is_configured(),
+        "platforms": social.connected_platforms(),
+        "all_platforms": social.PLATFORMS,
+        "media_required": social.MEDIA_REQUIRED,
+        "media_configured": media_gen.is_configured(),
+        "image_used": crm.get_media_count("image"),
+        "image_cap": get_image_cap(),
+        "video_used": crm.get_media_count("video"),
+        "video_cap": get_video_cap(),
+        "posts": social.list_posts_structured(status, limit),
+    })
+
+
+@app.post("/api/content/write")
+def content_write(body: ContentWriteIn) -> JSONResponse:
+    """Draft platform-shaped copy. Returns the text plus any numeric claims it
+    made, so the owner can verify them before anything is saved."""
+    topic = (body.topic or "").strip()
+    if not topic:
+        return JSONResponse({"ok": False, "error": "Give me a topic or angle to write about."})
+    platform = (body.platform or "Facebook").strip()
+    tone = (body.tone or "").strip() or "warm and practical"
+    shape = _PLATFORM_SHAPE.get(platform, "a short post")
+    try:
+        resp = client.messages.create(
+            model=resolve_model(),
+            max_tokens=1200,
+            system=_CONTENT_WRITER_SYSTEM,
+            messages=[{"role": "user", "content":
+                       f"Platform: {platform} -- write {shape}.\n"
+                       f"Tone: {tone}\n"
+                       f"Topic / angle: {topic}"}],
+        )
+        raw = "".join(getattr(b, "text", "") for b in resp.content).strip()
+        # Tolerant label parsing. The model usually emits a clean "CONTENT:" /
+        # "HASHTAGS:" pair, but not always -- it has produced mangled labels
+        # ("CONTENTravel:") and markdown-wrapped ones ("**CONTENT:**"). An exact
+        # string strip leaves that garbage at the top of the owner's post, so
+        # match the label loosely instead: optional bold, CONTENT plus any
+        # trailing word characters, optional colon.
+        m = re.search(r"\**\s*HASHTAGS\w*\s*:?\s*\**", raw, re.I)
+        if m:
+            content_txt, hashtags_txt = raw[:m.start()], raw[m.end():].strip()
+        else:
+            content_txt, hashtags_txt = raw, ""
+        content_txt = re.sub(r"^\s*\**\s*CONTENT\w*\s*:?\s*\**\s*", "",
+                             content_txt, count=1, flags=re.I).strip()
+        return JSONResponse({
+            "ok": True,
+            "content": content_txt,
+            "hashtags": hashtags_txt,
+            "claims": social.extract_claims(content_txt),
+            "needs_media": social.MEDIA_REQUIRED.get(platform, ""),
+        })
+    except Exception as e:
+        log.exception("content_write failed")
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"})
+
+
+@app.post("/api/content/draft")
+def content_draft(body: ContentDraftIn) -> JSONResponse:
+    """Save a Draft row. Never publishes -- same guarantee as the chat tool."""
+    result = social.create_draft(
+        body.platform or "", body.content or "",
+        body.title or "", body.hashtags or "", body.media_url or "",
+    )
+    ok = result.startswith("DRAFT saved")
+    return JSONResponse({"ok": ok, "result": result})
+
+
+@app.post("/api/content/publish")
+def content_publish(body: ContentPublishIn) -> JSONResponse:
+    """Send one Draft to its platform's Zapier webhook. Owner-initiated only."""
+    post_id = (body.post_id or "").strip()
+    if not post_id:
+        return JSONResponse({"ok": False, "result": "No post id given."})
+    result = social.publish_post(post_id)
+    return JSONResponse({"ok": result.startswith("Sent to Zapier"), "result": result})
+
+
+@app.post("/api/content/image")
+def content_image(body: ContentMediaIn) -> JSONResponse:
+    """Generate one image and file it in the asset library. Honors the same
+    monthly spend cap as the chat tool -- this is a second door to the same
+    budget, not a way around it."""
+    prompt = (body.prompt or "").strip()
+    if not prompt:
+        return JSONResponse({"ok": False, "error": "Describe the image you want."})
+    if not media_gen.is_configured():
+        return JSONResponse({"ok": False, "error": "Image generation isn't connected -- XAI_API_KEY needs to be set."})
+    cap = get_image_cap()
+    if crm.get_media_count("image") >= cap:
+        return JSONResponse({"ok": False, "error": f"Monthly image cap reached ({cap}). Raise it in Settings if you need more."})
+    result = media_gen.generate_image(prompt, body.aspect_ratio or "")
+    if not result.get("ok"):
+        err = result.get("error") or "generation failed"
+        return JSONResponse({"ok": False, "error": "Image generation isn't connected yet -- XAI_API_KEY needs to be set." if err == "not_connected" else f"Image generation failed: {err}"})
+    crm.increment_media_count("image")
+    name = prompt[:60] or "Generated image"
+    assets.add_asset(name, result["url"], "Photo", "ai-generated",
+                     f"Generated via xAI. Prompt: {prompt[:500]}")
+    return JSONResponse({"ok": True, "url": result["url"], "name": name,
+                         "used": crm.get_media_count("image"), "cap": cap})
+
+
+@app.post("/api/content/video")
+def content_video(body: ContentMediaIn) -> JSONResponse:
+    """Generate one short video and file it in the asset library. Same cap."""
+    prompt = (body.prompt or "").strip()
+    if not prompt:
+        return JSONResponse({"ok": False, "error": "Describe the video you want."})
+    if not media_gen.is_configured():
+        return JSONResponse({"ok": False, "error": "Video generation isn't connected -- XAI_API_KEY needs to be set."})
+    cap = get_video_cap()
+    if crm.get_media_count("video") >= cap:
+        return JSONResponse({"ok": False, "error": f"Monthly video cap reached ({cap}). Raise it in Settings if you need more."})
+    result = media_gen.generate_video(prompt, body.duration or 8,
+                                      body.aspect_ratio or "", body.image_url or "")
+    if not result.get("ok"):
+        err = result.get("error") or "generation failed"
+        if err == "not_connected":
+            msg = "Video generation isn't connected yet -- XAI_API_KEY needs to be set."
+        elif err == "timeout":
+            msg = "Still processing -- check the asset library in a minute, it usually lands."
+        else:
+            msg = f"Video generation failed: {err}"
+        return JSONResponse({"ok": False, "error": msg})
+    crm.increment_media_count("video")
+    name = prompt[:60] or "Generated video"
+    assets.add_asset(name, result["url"], "Video", "ai-generated",
+                     f"Generated via xAI. Prompt: {prompt[:500]}")
+    return JSONResponse({"ok": True, "url": result["url"], "name": name,
+                         "duration": result.get("duration", ""),
+                         "used": crm.get_media_count("video"), "cap": cap})
+
+
+@app.get("/api/pending-requests")
+def pending_requests() -> JSONResponse:
+    """Return build requests still New or Building (owner-only)."""
+    all_requests = crm.get_pending_requests()
+    pending = [r for r in all_requests if r["status"] in ("New", "Building")]
+    return JSONResponse({"pending": pending, "total": len(all_requests)})
+
+
+@app.post("/api/update-request-status")
+def update_request_status_api(req_id: str, status: str) -> JSONResponse:
+    """Owner-only. Move a build request between New/Building/Done."""
+    return JSONResponse({"ok": crm.update_request_status(req_id, status)})
+
+
+# ---- Client strategies (Annabelle's sales playbook per prospect) ------------
+# Owner-only by virtue of the gate middleware above -- every /api/ path that
+# isn't on the exempt list requires a valid cc_session. These let a strategy
+# built outside the app be pushed in, and let Annabelle pull it at chat time
+# via the get_client_strategy tool.
+
+class StrategyRequest(BaseModel):
+    client: str
+    content: str
+    kind: str = "sales_strategy"
+    priority: str = "normal"
+
+
+@app.post("/api/strategy")
+def save_strategy_api(req: StrategyRequest) -> JSONResponse:
+    """Owner-only. Store or replace a client strategy. Upserts on
+    (client, kind), so re-pushing a revision overwrites rather than
+    leaving Annabelle two contradictory versions to choose between."""
+    result = crm.save_strategy(
+        client=req.client, content=req.content,
+        kind=req.kind, priority=req.priority,
+    )
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.get("/api/strategies")
+def list_strategies_api() -> JSONResponse:
+    """Owner-only. Index of stored strategies (no content), high priority first."""
+    rows = crm.list_strategies()
+    return JSONResponse({"strategies": rows, "total": len(rows)})
+
+
+@app.get("/api/strategy/{client}")
+def get_strategy_api(client: str, kind: str = "") -> JSONResponse:
+    """Owner-only. Full stored strategy content for one client."""
+    rows = crm.get_strategy(client, kind)
+    return JSONResponse({"client": client, "strategies": rows, "total": len(rows)})
+
+
+# ---- Web Push (phone/lock-screen alerts) -----------------------------------
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+@app.get("/api/push/vapid-public-key")
+def push_vapid_public_key() -> JSONResponse:
+    """Owner-only. The public half of the VAPID keypair -- safe to hand to
+    the browser, it's what PushManager.subscribe() needs. Empty string means
+    push isn't configured yet on this deployment."""
+    return JSONResponse({"key": push.VAPID_PUBLIC_KEY, "configured": push.is_configured()})
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(req: PushSubscribeRequest, request: Request) -> JSONResponse:
+    """Owner-only. Register this device/browser for lock-screen alert push."""
+    ok = crm.add_push_subscription(
+        req.endpoint, req.p256dh, req.auth, request.headers.get("user-agent", ""))
+    return JSONResponse({"ok": ok})
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(req: PushSubscribeRequest) -> JSONResponse:
+    """Owner-only. Stop sending push to this device (e.g. notifications toggled off)."""
+    crm.remove_push_subscription(req.endpoint)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/push/test")
+def push_test() -> JSONResponse:
+    """Owner-only. Send a one-off test notification to every subscribed device."""
+    sent = push.send_to_owner("Test Alert", "Push notifications are working.")
+    return JSONResponse({"sent": sent})
+
+
+@app.post("/run/calendar-reminder")
+def run_calendar_reminder(request: Request) -> JSONResponse:
+    """Gate-exempt (protected by RUN_SECRET, not a session -- a cron job can't
+    hold a login cookie). Triggered by a daily GitHub Actions schedule so the
+    owner gets a phone push the day before any calendar event, instead of
+    relying on him remembering to open the Schedule panel and look."""
+    secret = os.environ.get("RUN_SECRET", "")
+    if not secret or request.query_params.get("key") != secret:
+        return JSONResponse({"detail": "forbidden"}, status_code=403)
+    if not gcal.is_configured():
+        return JSONResponse({"sent": 0, "detail": "calendar not connected"})
+    if not push.is_configured():
+        return JSONResponse({"sent": 0, "detail": "push not connected"})
+
+    result = gcal.list_upcoming_events(days=2)
+    # Bucket by US/Eastern date (fixed UTC-4 approximation -- good enough for
+    # a once-a-day reminder; the Schedule panel already has this same
+    # server-local-time limitation for date bucketing).
+    tomorrow = (datetime.now(timezone.utc) - timedelta(hours=4) + timedelta(days=1)).strftime("%Y-%m-%d")
+    events = [e for e in result.get("events", []) if e.get("date") == tomorrow]
+    if not events:
+        return JSONResponse({"sent": 0, "detail": "no events tomorrow", "date": tomorrow})
+
+    title = f"{len(events)} event{'s' if len(events) != 1 else ''} tomorrow"
+    body = "; ".join(f"{e['time']} — {e['title']}" for e in events)
+    sent = push.send_to_owner(title, body)
+    return JSONResponse({"sent": sent, "date": tomorrow, "events": events})
+
+
+@app.get("/api/brand")
+def get_brand_api() -> JSONResponse:
+    """Public. Returns current brand theme — accent color, derived light/dark, logo URL."""
+    return JSONResponse(brand.get_brand())
+
+
+@app.post("/api/brand")
+async def set_brand_api(request: Request) -> JSONResponse:
+    """Owner-only (behind access gate). Saves brand accent color and/or logo URL."""
+    body = await request.json()
+    return JSONResponse(brand.set_brand(
+        accent=body.get("accent"),
+        logo_url=body.get("logo_url"),
+    ))
+
+
+@app.get("/api/results")
+def get_results(month: str = "") -> JSONResponse:
+    """Owner-only. Proof-of-value summary: leads, bookings, conversations for one month."""
+    return JSONResponse(results.get_monthly_summary(month))
+
+
+@app.get("/api/export")
+def export_data() -> JSONResponse:
+    """Owner-only. Export all conversations + CRM data as JSON for backup/analysis."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    export = {
+        "exported_at": now.isoformat(),
+        "conversations": crm.get_all_history(limit=9999),
+        "users": users.list_users() if crm.is_configured() else [],
+    }
+    return JSONResponse({
+        "data": export,
+        "filename": f"stinger-export-{now.strftime('%Y%m%d-%H%M%S')}.json"
+    })
 
 
 TTS_VOICE_OPTIONS = [
@@ -576,19 +2498,34 @@ class SettingsUpdate(BaseModel):
     tts_voice: str = ""
     zapier_webhook_url: str = ""
     # Per-platform webhook overrides (each platform can have its own Zap; the
-    # generic zapier_webhook_url above stays the Facebook fallback). Blank = untouched.
+    # generic zapier_webhook_url above stays the fallback). Blank = untouched.
     zapier_webhook_url_facebook: str = ""
     zapier_webhook_url_instagram: str = ""
     zapier_webhook_url_youtube: str = ""
     zapier_webhook_url_tiktok: str = ""
     zapier_webhook_url_x: str = ""
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    openai_api_key: str = ""
+    xai_api_key: str = ""
+    media_image_provider: str = ""  # "chatgpt" or "grok" (for images)
+    media_video_provider: str = ""  # "grok" (only option currently)
+    automation_level: str = ""
+    chat_model_default: str = ""  # MODEL_CHOICES slug
 
 
 @app.get("/api/settings")
-def get_settings() -> JSONResponse:
-    """Owner-only (behind the access gate). Reports connection status and
-    current admin-editable config -- never echoes secrets (app password,
-    access code) back to the frontend, only whether they're set/custom."""
+def get_settings(request: Request) -> JSONResponse:
+    """Behind the access gate. Reports connection status and current config.
+    Voice, model, and automation level are returned per-user when overrides exist;
+    all other fields are global (owner-only to change). Secrets (app password,
+    access code) are never echoed back -- only whether they're set/custom."""
+    username = _get_session_username(request)
+    password_is_default = False
+    if crm.is_configured():
+        owner = users.get_user("owner")
+        if owner and not crm.get_setting("owner_password_changed", ""):
+            password_is_default = True
     return JSONResponse({
         "gmail_address": emailer.get_gmail_address(),
         "gmail_connected": emailer.is_configured(),
@@ -598,50 +2535,460 @@ def get_settings() -> JSONResponse:
         "public_chat_count": crm.get_chat_count("public"),
         "owner_chat_cap": get_owner_chat_cap(),
         "owner_chat_count": crm.get_chat_count("owner"),
-        "tts_voice": get_tts_voice(),
+        "tts_voice": get_user_tts_voice(username),
         "tts_voice_options": TTS_VOICE_OPTIONS,
+        "automation_level": get_user_automation_level(username),
+        "chat_model_default": get_user_model_key(username),
+        "zapier_webhook_url": crm.get_setting(social.WEBHOOK_KEY, "") if crm.is_configured() else "",
+        "zapier_webhook_url_instagram": crm.get_setting(f"{social.WEBHOOK_KEY}_instagram", "") if crm.is_configured() else "",
+        "zapier_webhook_url_youtube": crm.get_setting(f"{social.WEBHOOK_KEY}_youtube", "") if crm.is_configured() else "",
+        "zapier_webhook_url_tiktok": crm.get_setting(f"{social.WEBHOOK_KEY}_tiktok", "") if crm.is_configured() else "",
+        "model_options": [{"key": k, **v} for k, v in MODEL_CHOICES.items()],
         "access_code_is_custom": bool(crm.get_setting("access_code_override", "")),
+        "calendar_connected": gcal.is_configured(),
+        "calendar_configurable": bool(gcal.CLIENT_ID and gcal.CLIENT_SECRET),
         "social_connected": social.is_configured(),
         "social_platforms": social.connected_platforms(),
+        "elevenlabs_connected": voice_eleven.is_configured(),
+        "elevenlabs_voice_options": list(voice_eleven.DEFAULT_VOICES.keys()),
+        "openai_connected": is_openai_configured(),
+        "xai_connected": media_gen.is_grok_configured(),
+        "media_image_provider": crm.get_setting("media_image_provider", "chatgpt") if crm.is_configured() else "chatgpt",
+        "media_video_provider": crm.get_setting("media_video_provider", "grok") if crm.is_configured() else "grok",
+        "password_is_default": password_is_default,
     })
 
 
 @app.post("/api/settings")
-def save_settings(req: SettingsUpdate) -> JSONResponse:
-    """Owner-only. Saves connector credentials and admin config to Airtable
-    Settings so they take effect immediately -- no Render redeploy needed.
-    Blank fields are left untouched (so re-saving one field doesn't wipe
-    another, and re-saving the address doesn't clear a saved password)."""
-    if req.gmail_address.strip():
-        crm.set_setting(emailer.GMAIL_ADDRESS_KEY, req.gmail_address.strip())
-    if req.gmail_app_password.strip():
-        crm.set_setting(emailer.GMAIL_APP_PASSWORD_KEY, req.gmail_app_password.strip())
-    for key, field in (
-        ("cap_search_monthly", req.search_cap),
-        ("cap_chat_public", req.public_chat_cap),
-        ("cap_chat_owner", req.owner_chat_cap),
-    ):
-        if field.strip():
-            try:
-                crm.set_setting(key, str(int(field.strip())))
-            except ValueError:
-                pass
+def save_settings(req: SettingsUpdate, request: Request) -> JSONResponse:
+    """Saves config to Airtable so changes take effect immediately -- no Render
+    redeploy needed.  Blank fields are left untouched.
+
+    Owner users: voice, model, and automation changes become the global default
+    that new users inherit.  Staff users: those same changes are scoped to their
+    own account only (per-user override), leaving the global defaults intact."""
+    username = _get_session_username(request)
+    user = users.get_user(username) if username else None
+    is_owner = (user or {}).get("role") == "owner"
+
+    # Admin-only settings — only owners may change these
+    if is_owner:
+        if req.gmail_address.strip():
+            crm.set_setting(emailer.GMAIL_ADDRESS_KEY, req.gmail_address.strip())
+        if req.gmail_app_password.strip():
+            crm.set_setting(emailer.GMAIL_APP_PASSWORD_KEY, req.gmail_app_password.strip())
+        for key, field in (
+            ("cap_search_monthly", req.search_cap),
+            ("cap_chat_public", req.public_chat_cap),
+            ("cap_chat_owner", req.owner_chat_cap),
+        ):
+            if field.strip():
+                try:
+                    crm.set_setting(key, str(int(field.strip())))
+                except ValueError:
+                    pass
+        if req.access_code.strip():
+            crm.set_setting("access_code_override", req.access_code.strip())
+        if req.zapier_webhook_url.strip():
+            crm.set_setting(social.WEBHOOK_KEY, req.zapier_webhook_url.strip())
+        for plat in ("facebook", "instagram", "youtube", "tiktok", "x"):
+            val = getattr(req, f"zapier_webhook_url_{plat}", "").strip()
+            if val:
+                crm.set_setting(f"{social.WEBHOOK_KEY}_{plat}", val)
+        if req.elevenlabs_api_key.strip():
+            crm.set_setting(voice_eleven.API_KEY_SETTING, req.elevenlabs_api_key.strip())
+        if req.elevenlabs_voice_id.strip():
+            vid = voice_eleven.DEFAULT_VOICES.get(req.elevenlabs_voice_id.strip(), req.elevenlabs_voice_id.strip())
+            crm.set_setting(voice_eleven.VOICE_ID_SETTING, vid)
+        if req.openai_api_key.strip():
+            crm.set_setting(OPENAI_API_KEY_SETTING, req.openai_api_key.strip())
+        if req.xai_api_key.strip():
+            crm.set_setting("xai_api_key", req.xai_api_key.strip())
+        if req.media_image_provider.strip() in ("chatgpt", "grok"):
+            crm.set_setting("media_image_provider", req.media_image_provider.strip())
+        if req.media_video_provider.strip() in ("grok",):
+            crm.set_setting("media_video_provider", req.media_video_provider.strip())
+
+    # Per-user settings (voice, model, automation) -- any logged-in user saves
+    # these to their own account; owners save globally so new users inherit them.
     if req.tts_voice.strip():
-        crm.set_setting("tts_voice_override", req.tts_voice.strip())
-    if req.access_code.strip():
-        crm.set_setting("access_code_override", req.access_code.strip())
-    if req.zapier_webhook_url.strip():
-        crm.set_setting(social.WEBHOOK_KEY, req.zapier_webhook_url.strip())
-    for plat in ("facebook", "instagram", "youtube", "tiktok", "x"):
-        val = getattr(req, f"zapier_webhook_url_{plat}", "").strip()
-        if val:
-            crm.set_setting(f"{social.WEBHOOK_KEY}_{plat}", val)
+        if is_owner:
+            crm.set_setting("tts_voice_override", req.tts_voice.strip())
+        elif username:
+            crm.set_user_setting(username, "tts_voice_override", req.tts_voice.strip())
+    if req.automation_level.strip() in AUTOMATION_LEVELS:
+        if is_owner:
+            crm.set_setting("automation_level", req.automation_level.strip())
+        elif username:
+            crm.set_user_setting(username, "automation_level", req.automation_level.strip())
+    if req.chat_model_default.strip() in MODEL_CHOICES:
+        if is_owner:
+            crm.set_setting("chat_model_default", req.chat_model_default.strip())
+        elif username:
+            crm.set_user_setting(username, "chat_model_default", req.chat_model_default.strip())
     return JSONResponse({
         "ok": True,
         "gmail_connected": emailer.is_configured(),
         "social_connected": social.is_configured(),
         "social_platforms": social.connected_platforms(),
+        "elevenlabs_connected": voice_eleven.is_configured(),
+        "openai_connected": is_openai_configured(),
+        "xai_connected": media_gen.is_configured(),
     })
+
+
+# User management endpoints (owner only, behind access gate)
+
+
+class AddUserRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: str = "owner"  # "owner" or "staff"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+def _get_session_username(request: Request) -> Optional[str]:
+    """Return the username for the current session, or None if unauthenticated."""
+    token = request.cookies.get("cc_session")
+    if not token:
+        return None
+    return users.verify_session_token(token)
+
+
+def _get_session_role(request: Request) -> Optional[str]:
+    """Return the role of the current session user, or None if unauthenticated."""
+    username = _get_session_username(request)
+    if not username:
+        return None
+    user = users.get_user(username)
+    return user.get("role") if user else None
+
+
+@app.get("/api/users")
+def get_users(request: Request) -> JSONResponse:
+    """Owner-only. List all users."""
+    if _get_session_role(request) != "owner":
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    user_list = users.list_users()
+    return JSONResponse({"ok": True, "users": user_list})
+
+
+@app.post("/api/users")
+def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
+    """Owner-only. Create a new user account."""
+    if _get_session_role(request) != "owner":
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    if not req.username or not req.email or not req.password:
+        return JSONResponse({"ok": False, "detail": "Missing required fields"}, status_code=400)
+    ok, reason = users.validate_username(req.username)
+    if not ok:
+        return JSONResponse({"ok": False, "detail": reason}, status_code=400)
+    ok, reason = users.validate_password(req.password)
+    if not ok:
+        return JSONResponse({"ok": False, "detail": reason}, status_code=400)
+    if users.add_user(req.username, req.email, req.password, req.role):
+        # Set default user preferences
+        if crm.is_configured():
+            try:
+                crm.set_user_setting(req.username, "chat_model_default", get_default_model_key())
+                crm.set_user_setting(req.username, "automation_level", get_automation_level())
+                crm.set_user_setting(req.username, "tts_voice_override", get_tts_voice())
+            except Exception as e:
+                log.warning(f"Could not set defaults for new user {req.username}: {e}")
+        return JSONResponse({"ok": True, "detail": "User created"})
+    return JSONResponse({"ok": False, "detail": "User already exists or error creating user"}, status_code=400)
+
+
+@app.delete("/api/users/{username}")
+def delete_user(username: str, request: Request) -> JSONResponse:
+    """Owner-only. Delete a user account."""
+    if _get_session_role(request) != "owner":
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    if users.delete_user(username):
+        return JSONResponse({"ok": True, "detail": "User deleted"})
+    return JSONResponse({"ok": False, "detail": "User not found"}, status_code=400)
+
+
+@app.post("/api/change-password")
+def change_password(req: ChangePasswordRequest, request: Request) -> JSONResponse:
+    """Any logged-in user. Change their own password."""
+    # Extract username from session token
+    session_token = request.cookies.get("cc_session")
+    if not session_token:
+        return JSONResponse({"ok": False, "detail": "Not logged in"}, status_code=401)
+    username = users.verify_session_token(session_token)
+    if not username:
+        return JSONResponse({"ok": False, "detail": "Invalid session"}, status_code=401)
+
+    # Verify current password
+    user = users.get_user(username)
+    if not user or not users.verify_password(req.current_password, user["password_hash"]):
+        return JSONResponse({"ok": False, "detail": "Current password is incorrect"}, status_code=401)
+
+    # Validate new password complexity
+    ok, reason = users.validate_password(req.new_password)
+    if not ok:
+        return JSONResponse({"ok": False, "detail": reason}, status_code=400)
+
+    # Update password
+    if not users.update_user_password(username, req.new_password):
+        return JSONResponse({"ok": False, "detail": "Failed to update password"}, status_code=500)
+
+    # Mark that password has been changed from default
+    crm.set_setting("owner_password_changed", "true")
+
+    return JSONResponse({"ok": True, "detail": "Password changed"})
+
+
+# Louden Bonded Pools KPI dashboard (owner only, behind access gate)
+
+
+@app.get("/api/calendar/upcoming")
+def calendar_upcoming(days: int = 30) -> JSONResponse:
+    """Owner-only. Upcoming events on the connected calendar for the Schedule panel."""
+    return JSONResponse(gcal.list_upcoming_events(days=days))
+
+
+@app.get("/api/calendar/connect")
+def calendar_connect() -> JSONResponse:
+    """Owner-only. Returns the Google authorization URL to start the OAuth flow.
+    The owner opens this URL, grants access, and Google redirects back to
+    /auth/google-callback with a code we exchange for a token."""
+    flow = gcal.get_oauth_flow()
+    if not flow:
+        return JSONResponse(
+            {"error": "Google Calendar isn't configured on the server (missing client ID/secret)."},
+            status_code=400,
+        )
+    flow.redirect_uri = gcal.REDIRECT_URI
+    state = _make_oauth_state()
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=state,
+    )
+    return JSONResponse({"auth_url": auth_url})
+
+
+@app.get("/auth/google-callback")
+def google_callback(request: Request) -> HTMLResponse:
+    """Public (gate-exempt): Google redirects here after the owner authorizes.
+    We verify the CSRF state token, exchange the code, and store the credential."""
+    state = request.query_params.get("state", "")
+    if not _verify_oauth_state(state):
+        return HTMLResponse("<h2>Invalid state token — possible CSRF. Please try connecting again.</h2>", status_code=400)
+    code = request.query_params.get("code")
+    if not code:
+        return HTMLResponse("<h2>No authorization code received. Try again.</h2>", status_code=400)
+    flow = gcal.get_oauth_flow()
+    if not flow:
+        return HTMLResponse("<h2>Calendar not configured on the server.</h2>", status_code=400)
+    flow.redirect_uri = gcal.REDIRECT_URI
+    try:
+        flow.fetch_token(code=code)
+        gcal.store_token(flow.credentials.to_json())
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<h2>Google Calendar connected!</h2>"
+            "<p>You can close this tab and return to the Command Center.</p>"
+            "</body></html>"
+        )
+    except Exception as e:
+        return HTMLResponse(f"<h2>Couldn't connect: {e}</h2>", status_code=400)
+
+
+@app.get("/api/drive/connect")
+def drive_connect() -> JSONResponse:
+    """Owner-only. Returns the Google OAuth URL for Drive.readonly scope."""
+    flow = files_gdrive.get_oauth_flow()
+    if not flow:
+        return JSONResponse(
+            {"error": "Google Drive isn't configured (missing GOOGLE_CLIENT_ID/SECRET)."},
+            status_code=400,
+        )
+    flow.redirect_uri = files_gdrive.REDIRECT_URI
+    state = _make_oauth_state()
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=state,
+    )
+    return JSONResponse({"auth_url": auth_url})
+
+
+@app.get("/auth/drive-callback")
+def drive_callback(request: Request) -> HTMLResponse:
+    """Public (gate-exempt). Google redirects here after the owner authorizes Drive."""
+    state = request.query_params.get("state", "")
+    if not _verify_oauth_state(state):
+        return HTMLResponse("<h2>Invalid state token — possible CSRF. Try again.</h2>", status_code=400)
+    code = request.query_params.get("code")
+    if not code:
+        return HTMLResponse("<h2>No authorization code received. Try again.</h2>", status_code=400)
+    flow = files_gdrive.get_oauth_flow()
+    if not flow:
+        return HTMLResponse("<h2>Drive not configured on the server.</h2>", status_code=400)
+    flow.redirect_uri = files_gdrive.REDIRECT_URI
+    try:
+        flow.fetch_token(code=code)
+        files_gdrive.store_token(flow.credentials.to_json())
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<h2>Google Drive connected!</h2>"
+            "<p>You can close this tab and return to the Command Center.</p>"
+            "</body></html>"
+        )
+    except Exception as e:
+        return HTMLResponse(f"<h2>Couldn't connect Drive: {e}</h2>", status_code=400)
+
+
+@app.get("/api/dropbox/connect")
+def dropbox_connect() -> JSONResponse:
+    """Owner-only. Returns the Dropbox OAuth authorize URL."""
+    url = files_dropbox.authorize_url()
+    if not url:
+        return JSONResponse(
+            {"error": "Dropbox isn't configured (missing DROPBOX_APP_KEY/DROPBOX_APP_SECRET). "
+                      "You can also skip OAuth and set DROPBOX_ACCESS_TOKEN directly for testing."},
+            status_code=400,
+        )
+    return JSONResponse({"auth_url": url})
+
+
+@app.get("/dropbox/callback")
+def dropbox_callback(request: Request) -> HTMLResponse:
+    """Public (gate-exempt). Dropbox redirects here after authorization."""
+    code = request.query_params.get("code", "")
+    if not code:
+        return HTMLResponse("<h2>No authorization code received. Try again.</h2>", status_code=400)
+    try:
+        payload = files_dropbox.exchange_code(code)
+        files_dropbox.store_oauth_result(payload)
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<h2>Dropbox connected!</h2>"
+            "<p>You can close this tab and return to the Command Center.</p>"
+            "</body></html>"
+        )
+    except Exception as e:
+        return HTMLResponse(f"<h2>Couldn't connect Dropbox: {e}</h2>", status_code=400)
+
+
+@app.get("/lightspeed/connect")
+def lightspeed_connect() -> Response:
+    """Owner-only (behind the login gate). Redirects to Lightspeed's authorize page."""
+    client_id = os.environ.get("LIGHTSPEED_CLIENT_ID", "")
+    if not client_id:
+        return HTMLResponse("<h2>LIGHTSPEED_CLIENT_ID isn't set in Render yet.</h2>", status_code=400)
+    state = _make_oauth_state()
+    url = (
+        "https://cloud.lightspeedapp.com/auth/oauth/authorize"
+        f"?response_type=code&client_id={client_id}&scope=employee:all&state={state}"
+    )
+    return RedirectResponse(url)
+
+
+@app.get("/lightspeed/callback")
+def lightspeed_callback(request: Request) -> HTMLResponse:
+    """Public (gate-exempt): Lightspeed redirects here after the owner authorizes.
+    Exchanges the code for tokens and displays them for pasting into Render env vars."""
+    import html as _html
+    if not _verify_oauth_state(request.query_params.get("state", "")):
+        return HTMLResponse("<h2>Invalid state token. Start again from /lightspeed/connect.</h2>", status_code=400)
+    code = request.query_params.get("code", "")
+    if not code:
+        return HTMLResponse("<h2>No authorization code received. Try again from /lightspeed/connect.</h2>", status_code=400)
+    client_id = os.environ.get("LIGHTSPEED_CLIENT_ID", "")
+    client_secret = os.environ.get("LIGHTSPEED_CLIENT_SECRET", "")
+    if not (client_id and client_secret):
+        return HTMLResponse("<h2>LIGHTSPEED_CLIENT_ID / LIGHTSPEED_CLIENT_SECRET aren't set in Render.</h2>", status_code=400)
+    resp = httpx.post(
+        "https://cloud.lightspeedapp.com/oauth/access_token.php",
+        data={
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+        },
+        timeout=20,
+    )
+    if resp.status_code != 200:
+        return HTMLResponse(
+            f"<h2>Token exchange failed ({resp.status_code})</h2><pre>{_html.escape(resp.text)}</pre>",
+            status_code=400,
+        )
+    tokens = resp.json()
+    access_token = tokens.get("access_token", "")
+    refresh_token = tokens.get("refresh_token", "")
+    business_id = ""
+    try:
+        acct = httpx.get(
+            "https://api.lightspeedapp.com/API/V3/Account.json",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+        if acct.status_code != 200:
+            acct = httpx.get(
+                "https://api.lightspeedapp.com/API/Account.json",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=20,
+            )
+        if acct.status_code == 200:
+            account = acct.json().get("Account", {})
+            if isinstance(account, list):
+                account = account[0] if account else {}
+            business_id = str(account.get("accountID", ""))
+    except Exception:
+        pass
+    rows = "".join(
+        f"<p style='margin:18px 0'><b>{name}</b><br>"
+        f"<code style='display:block;background:#f4f4f4;padding:10px;border-radius:6px;"
+        f"word-break:break-all;user-select:all'>{_html.escape(value) or '(not found — see note below)'}</code></p>"
+        for name, value in [
+            ("LIGHTSPEED_ACCESS_TOKEN", access_token),
+            ("LIGHTSPEED_REFRESH_TOKEN", refresh_token),
+            ("LIGHTSPEED_BUSINESS_ID", business_id),
+        ]
+    )
+    return HTMLResponse(
+        "<html><body style='font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 20px'>"
+        "<h2>Lightspeed connected!</h2>"
+        "<p>Copy each value below into the matching Render environment variable, "
+        "then click <b>Save, rebuild, and deploy</b>. Close this tab when done — "
+        "these values are secrets.</p>"
+        f"{rows}"
+        "<p style='color:#666;font-size:14px'>If Business ID shows as not found, it's visible in "
+        "Lightspeed Back Office under Settings once logged in.</p>"
+        "</body></html>"
+    )
+
+
+# Per-IP sliding-window limiter for the public widget — stops a bot from
+# draining the monthly cap in seconds. Resets on restart (acceptable for
+# single-instance; the monthly cap is the real backstop).
+_PUBLIC_CHAT_WINDOW = 60   # seconds
+_PUBLIC_CHAT_LIMIT = 10    # requests per IP per window
+_public_chat_times: Dict[str, list] = {}
+_public_chat_last_gc = 0.0
+
+
+def _gc_rate_limiter() -> None:
+    """Evict IPs whose last request was over 2× the window ago to prevent unbounded growth."""
+    global _public_chat_last_gc
+    now = time.time()
+    if now - _public_chat_last_gc < 300:  # GC at most every 5 minutes
+        return
+    _public_chat_last_gc = now
+    stale = [ip for ip, ts in _public_chat_times.items() if not ts or now - ts[-1] > _PUBLIC_CHAT_WINDOW * 2]
+    for ip in stale:
+        del _public_chat_times[ip]
 
 
 @app.get("/api/agent-name")
@@ -650,12 +2997,50 @@ def agent_name() -> JSONResponse:
     return JSONResponse({"name": crm.get_setting(AGENT_NAME_KEY) or None})
 
 
+@app.get("/api/events")
+def get_events(business: str = "") -> JSONResponse:
+    """Owner-only. List events, optionally filtered to one business."""
+    return JSONResponse({"events": events.list_events_raw(business)})
+
+
+@app.post("/api/setup")
+def setup_first_user(req: LoginRequest) -> JSONResponse:
+    """One-time bootstrap: create the first admin user if no users exist yet."""
+    existing = users.list_users()
+    if existing:
+        return JSONResponse({"ok": False, "detail": "Setup already complete. Use /api/login."}, status_code=403)
+    if not req.username or not req.password:
+        return JSONResponse({"ok": False, "detail": "Username and password required"}, status_code=400)
+    ok = users.add_user(req.username, "admin@dreamerie.com", req.password, role="owner")
+    if not ok:
+        return JSONResponse({"ok": False, "detail": "Failed to create user"}, status_code=500)
+    token = users.create_session_token(req.username)
+    resp = JSONResponse({"ok": True, "detail": f"Account created for {req.username}. You are now logged in."})
+    resp.set_cookie("cc_session", token, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    return resp
+
+
 @app.post("/api/public-chat", response_model=ChatResponse)
-def public_chat(req: ChatRequest) -> ChatResponse:
+def public_chat(req: ChatRequest, request: Request) -> ChatResponse:
     """Customer-facing chat for the embeddable website widget. Not gated.
     Uses the public persona + limited tools (answer + capture leads)."""
-    name = crm.get_setting(AGENT_NAME_KEY) or "the assistant"
-    return run_main_brain(req.message, req.history, build_public_prompt(name), PUBLIC_TOOLS, persona="public")
+    _gc_rate_limiter()
+    ip = _client_ip(request)
+    now = time.time()
+    times = [t for t in _public_chat_times.get(ip, []) if now - t < _PUBLIC_CHAT_WINDOW]
+    if len(times) >= _PUBLIC_CHAT_LIMIT:
+        return ChatResponse(
+            reply="You're sending messages a bit fast — give me a moment and try again.",
+            delegated_to=[],
+        )
+    times.append(now)
+    _public_chat_times[ip] = times
+    req.clean()
+    try:
+        return run_main_brain(req.message, req.history, build_public_prompt(_current_agent_name()), PUBLIC_TOOLS,
+                               persona="public", request_id=req.request_id)
+    finally:
+        _clear_cancelled(req.request_id)
 
 
 @app.get("/widget")
@@ -670,112 +3055,393 @@ def privacy() -> FileResponse:
     return FileResponse("static/privacy.html")
 
 
-class TTSRequest(BaseModel):
-    text: str
+@app.get("/terms")
+def terms() -> FileResponse:
+    """Public terms of service, required for Twilio A2P 10DLC compliance."""
+    return FileResponse("static/terms.html")
 
 
-async def _grok_tts(text: str) -> bytes:
-    """Grok (xAI) neural TTS -> MP3 bytes. Raises on any failure, surfacing
-    the API's own error body so we can see exactly what it wants."""
-    async with httpx.AsyncClient(timeout=30) as http:
-        r = await http.post(
-            "https://api.x.ai/v1/tts",
-            headers={
-                "Authorization": f"Bearer {XAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"text": text, "voice_id": XAI_VOICE, "language": "en"},
-        )
-    if r.status_code != 200:
-        raise RuntimeError(f"xAI {r.status_code}: {r.text[:600]}")
-    if not r.content:
-        raise ValueError("empty audio")
-    return r.content
+@app.get("/capabilities")
+def capabilities() -> FileResponse:
+    """Public capabilities deck -- for embedding on the Wix site or sharing directly."""
+    return FileResponse("static/capabilities.html")
 
 
-async def _edge_tts(text: str) -> bytes:
-    """Free Microsoft Edge neural TTS -> MP3 bytes."""
-    communicate = edge_tts.Communicate(text, get_tts_voice(), rate=TTS_RATE)
-    audio = bytearray()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio.extend(chunk["data"])
-    return bytes(audio)
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots_txt() -> str:
+    """No public marketing site on this deployment -- keep crawlers out."""
+    return "User-agent: *\nDisallow: /\n"
 
 
-@app.post("/api/tts")
-async def tts(req: TTSRequest) -> Response:
-    """Return spoken MP3 for the text. Uses Grok TTS if XAI_API_KEY is set,
-    otherwise the free Edge TTS. Falls back to Edge if Grok errors."""
-    text = req.text.strip()[:3000]
-    if not text:
-        return Response(status_code=400)
-    if XAI_API_KEY:
+@app.get("/api/leads")
+def get_leads(request: Request, limit: int = 20) -> JSONResponse:
+    """Return recent CRM leads. Auth enforced by access_gate middleware."""
+    limit = min(limit, 100)  # cap to prevent hammering Airtable
+    if not crm.is_configured():
+        return JSONResponse({"leads": [], "error": "Airtable not configured"})
+    try:
+        records = crm.get_leads_raw(limit=limit)
+        return JSONResponse({"leads": records})
+    except Exception as e:
+        return JSONResponse({"leads": [], "error": str(e)}, status_code=500)
+
+
+@app.get("/api/assets")
+def get_assets_list(limit: int = 30, media_type: str = "") -> JSONResponse:
+    """Return recent media assets for the media dock. Auth enforced by access_gate."""
+    limit = min(limit, 50)
+    return JSONResponse({"assets": assets.list_assets_raw(limit=limit, media_type=media_type)})
+
+
+@app.get("/api/diagnostic")
+def api_diagnostic() -> JSONResponse:
+    """Owner-only. Deep probe of every integration — actually pings Stripe,
+    HubSpot, Twilio, Airtable, etc. and returns per-service ok/latency/error.
+    Backs both the /diagnostic UI page and Annabelle's run_diagnostic tool."""
+    return JSONResponse(diagnostic.run_all())
+
+
+@app.get("/diagnostic", response_class=HTMLResponse)
+def diagnostic_page() -> FileResponse:
+    """Owner-only. Human-readable status board for every integration."""
+    return FileResponse("static/diagnostic.html")
+
+
+@app.get("/api/features")
+def get_features_status() -> JSONResponse:
+    """Owner-only. Returns which features are enabled/disabled and why.
+    Used by the UI to show 'pending configuration' notices."""
+    config_status = config_check.get_configured_integrations()
+    disabled_report = config_check.get_disabled_tools_report()
+
+    return JSONResponse({
+        "integrations": {
+            name: {
+                "enabled": is_config,
+                "status": reason,
+            }
+            for name, (is_config, reason) in config_status.items()
+        },
+        "disabled_tools_by_reason": disabled_report,
+        "pending_configuration": [
+            {
+                "integration": name,
+                "action": reason,
+            }
+            for name, (is_config, reason) in config_status.items()
+            if not is_config
+        ]
+    })
+
+
+@app.get("/api/health")
+def health_check() -> JSONResponse:
+    """Owner-only. Returns connection status for every integration, and a checklist
+    of what still needs to be configured. Useful for monitoring and for Annabelle
+    to answer 'what's connected?' questions."""
+    from . import sms
+
+    # Get integration status
+    config_status = config_check.get_configured_integrations()
+    integrations = {name: is_config for name, (is_config, _) in config_status.items()}
+
+    # Get the reason message for each integration
+    reasons = {name: reason for name, (_, reason) in config_status.items()}
+
+    # Get disabled tools report
+    disabled_report = config_check.get_disabled_tools_report()
+
+    # Count stats
+    total_tools = len(config_check.TOOL_DEPENDENCIES)
+    enabled_tools = len([t for t in DELEGATION_TOOLS if t.get("name") in config_check.get_enabled_tool_names()])
+    disabled_tools = total_tools - enabled_tools
+
+    return JSONResponse({
+        "status": "ok",
+        "model": resolve_model(),
+        "integrations": {
+            "anthropic": True,
+            "airtable": crm.is_configured(),
+            "gmail": emailer.is_configured(),
+            "calendar": integrations.get("calendar", False),
+            "social_zapier": social.is_configured(),
+            "elevenlabs": voice_eleven.is_configured(),
+            "lightspeed": integrations.get("lightspeed", False),
+            "stripe": integrations.get("stripe", False),
+            "hubspot": integrations.get("hubspot", False),
+            "buildertrend": integrations.get("buildertrend", False),
+            "twilio": integrations.get("twilio", False),
+            "docusign": integrations.get("docusign", False),
+            "xai_media_gen": media_gen.is_configured(),
+            "push_notifications": push.is_configured(),
+        },
+        "configuration": {
+            "integration_details": reasons,
+            "tools_enabled": enabled_tools,
+            "tools_disabled": disabled_tools,
+            "disabled_tools_by_reason": disabled_report,
+            "pending_actions": [
+                {"integration": k, "action": v}
+                for k, v in reasons.items()
+                if not config_status[k][0]  # only unconfigured integrations
+            ]
+        }
+    })
+
+
+# ── STRIPE WEBHOOK ────────────────────────────────────────────────────────────
+
+@app.post("/api/webhooks/stripe")
+async def stripe_webhook(request: Request) -> JSONResponse:
+    """Gate-exempt. Stripe sends signed events here (payment succeeded, failed,
+    subscription updated). HMAC-verified before any action is taken."""
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    event = stripe_billing.verify_webhook(payload, sig)
+    if event is None:
+        return JSONResponse({"ok": False, "detail": "Invalid signature"}, status_code=400)
+
+    event_type = event.get("type", "")
+    data_obj = event.get("data", {}).get("object", {})
+
+    if event_type == "invoice.paid":
+        customer_email = data_obj.get("customer_email", "unknown")
+        amount = data_obj.get("amount_paid", 0) / 100
+        note = f"Stripe payment received: ${amount:.2f} from {customer_email}."
+        if crm.is_configured():
+            crm.save_turn("system", note)
+        from . import sms
+        if sms.is_configured() and os.environ.get("OWNER_PHONE"):
+            try:
+                sms.send(to=os.environ["OWNER_PHONE"], body=f"💰 Payment received: ${amount:.2f} from {customer_email}")
+            except Exception as e:
+                log.warning("Stripe webhook SMS notification failed: %s", e)
+
+    elif event_type == "invoice.payment_failed":
+        customer_email = data_obj.get("customer_email", "unknown")
+        note = f"Stripe payment FAILED for {customer_email}."
+        if crm.is_configured():
+            crm.save_turn("system", note)
+
+    elif event_type in ("customer.subscription.updated", "customer.subscription.deleted"):
+        sub_id = data_obj.get("id", "?")
+        status = data_obj.get("status", "?")
+        note = f"Stripe subscription {sub_id} → {status}."
+        if crm.is_configured():
+            crm.save_turn("system", note)
+
+    return JSONResponse({"ok": True, "type": event_type})
+
+
+# ── PROPOSAL ENDPOINTS ───────────────────────────────────────────────────────
+
+class ProposalSignRequest(BaseModel):
+    proposal_id: str = ""
+    signer_name: str
+    signer_email: str
+    signature_data_url: str = ""  # base64 PNG from canvas
+    client_name: str = ""
+    project_title: str = ""
+    total: str = ""
+
+
+_SIGN_WINDOW = 600   # 10 min sliding window
+_SIGN_LIMIT = 5      # signatures per IP per window (real clients need one or two, not five)
+_sign_times: Dict[str, list] = {}
+
+
+@app.post("/api/proposals/sign")
+def sign_proposal(req: ProposalSignRequest, request: Request) -> JSONResponse:
+    """
+    Record a signed proposal. Logs to CRM, optionally sends via DocuSign.
+    Called by the proposal.html viewer when the client accepts.
+    Gate-exempt: the client isn't logged in.
+    """
+    # Per-IP throttle -- open audit finding #6. Same sliding-window pattern
+    # already used for /api/public-chat and /api/unlock.
+    ip = _client_ip(request)
+    now = time.time()
+    times = [t for t in _sign_times.get(ip, []) if now - t < _SIGN_WINDOW]
+    if len(times) >= _SIGN_LIMIT:
+        return JSONResponse({"ok": False, "detail": "Too many signature attempts. Please wait a few minutes."}, status_code=429)
+    times.append(now)
+    _sign_times[ip] = times
+
+    import datetime as _dt
+    note = (
+        f"Proposal SIGNED by {req.signer_name} <{req.signer_email}> "
+        f"on {_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}. "
+        f"Project: {req.project_title}. Total: {req.total}."
+    )
+    if crm.is_configured():
+        crm.save_turn("system", note)
+    # Try HubSpot if configured
+    hubspot_result = None
+    if os.environ.get("HUBSPOT_ACCESS_TOKEN"):
         try:
-            data = await _grok_tts(text)
-            return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": "grok"})
+            hubspot_result = hubspot.capture_lead(
+                name=req.signer_name,
+                email=req.signer_email,
+                service=req.project_title,
+                notes=note,
+                deal_stage="contractsent",
+            )
         except Exception as e:
-            # Fall back to the free voice rather than going silent, but log why.
-            print(f"[tts] Grok TTS failed, using Edge fallback: {type(e).__name__}: {e}", flush=True)
-            data = await _edge_tts(text)
-            return Response(data, media_type="audio/mpeg", headers={"X-TTS-Engine": "edge-fallback"})
-    return Response(await _edge_tts(text), media_type="audio/mpeg", headers={"X-TTS-Engine": "edge"})
+            print(f"[proposals/sign] HubSpot error: {e}", flush=True)
+    return JSONResponse({
+        "ok": True,
+        "detail": f"Proposal accepted. Signature recorded for {req.signer_name}.",
+        "hubspot": bool(hubspot_result),
+    })
 
 
-# User management endpoints (owner only, behind access gate)
+@app.get("/proposal")
+def proposal_page() -> FileResponse:
+    """Serve the client-facing proposal viewer (gate-exempt)."""
+    return FileResponse("static/proposal.html")
 
 
-class AddUserRequest(BaseModel):
-    username: str
-    email: str
-    password: str
-    role: str = "owner"
+# ── BUILDERTREND WEBHOOK ──────────────────────────────────────────────────────
+
+_BT_WEBHOOK_SECRET = os.environ.get("BUILDERTREND_WEBHOOK_SECRET", "")
 
 
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
+@app.post("/api/webhooks/buildertrend")
+async def buildertrend_webhook(request: Request) -> JSONResponse:
+    """
+    Receives Buildertrend milestone/document events and reacts:
+    sends client SMS at each milestone, updates HubSpot on signing.
+    Configure in Buildertrend: Settings → Webhooks → URL = <this-domain>/api/webhooks/buildertrend?token=<BUILDERTREND_WEBHOOK_SECRET>
+    """
+    if not _BT_WEBHOOK_SECRET:
+        return JSONResponse({"ok": False, "detail": "BUILDERTREND_WEBHOOK_SECRET not configured"}, status_code=503)
+    token = request.query_params.get("token", "")
+    if not secrets.compare_digest(token, _BT_WEBHOOK_SECRET):
+        return JSONResponse({"ok": False}, status_code=401)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "detail": "Invalid JSON"}, status_code=400)
+    result = buildertrend.handle_webhook(payload)
+    return JSONResponse({"ok": True, "detail": result})
 
 
-@app.get("/api/users")
-def get_users() -> JSONResponse:
-    """Owner-only. List all users."""
-    return JSONResponse({"ok": True, "users": users.list_users()})
+# ── HUBSPOT LEAD CAPTURE (direct API shortcut) ────────────────────────────────
+
+class HubSpotLeadRequest(BaseModel):
+    name: str
+    email: str = ""
+    phone: str = ""
+    company: str = ""
+    service: str = ""
+    notes: str = ""
 
 
-@app.post("/api/users")
-def add_user(req: AddUserRequest) -> JSONResponse:
-    """Owner-only. Create a new user account."""
-    if not req.username or not req.email or not req.password:
-        return JSONResponse({"ok": False, "detail": "Missing required fields"}, status_code=400)
-    if users.add_user(req.username, req.email, req.password, req.role):
-        return JSONResponse({"ok": True, "detail": "User created"})
-    return JSONResponse({"ok": False, "detail": "User already exists or error creating user"}, status_code=400)
+@app.post("/api/hubspot/lead")
+def hubspot_lead(req: HubSpotLeadRequest) -> JSONResponse:
+    """Owner-only. Manually push a lead into HubSpot CRM."""
+    if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
+        return JSONResponse({"ok": False, "detail": "HubSpot not configured"}, status_code=400)
+    try:
+        result = hubspot.capture_lead(
+            name=req.name,
+            email=req.email,
+            phone=req.phone,
+            company=req.company,
+            service=req.service,
+            notes=req.notes,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": f"HubSpot API error: {exc}"}, status_code=502)
+    return JSONResponse({"ok": True, "contact_id": result["contact"]["id"],
+                         "deal_id": result["deal"]["id"]})
 
 
-@app.delete("/api/users/{username}")
-def delete_user(username: str) -> JSONResponse:
-    """Owner-only. Delete a user account."""
-    if users.delete_user(username):
-        return JSONResponse({"ok": True, "detail": "User deleted"})
-    return JSONResponse({"ok": False, "detail": "User not found"}, status_code=400)
+class DevTicketRequest(BaseModel):
+    request: str
+    urgency: str = "normal"
 
 
-@app.post("/api/change-password")
-def change_password(req: ChangePasswordRequest, request: Request) -> JSONResponse:
-    """Any logged-in user. Change their own password."""
-    session_token = request.cookies.get("cc_session")
-    if not session_token:
-        return JSONResponse({"ok": False, "detail": "Not logged in"}, status_code=401)
-    username = users.verify_session_token(session_token)
-    if not username:
-        return JSONResponse({"ok": False, "detail": "Invalid session"}, status_code=401)
-    user = users.get_user(username)
-    if not user or not users.verify_password(req.current_password, user["password_hash"]):
-        return JSONResponse({"ok": False, "detail": "Current password is incorrect"}, status_code=401)
-    if not users.update_user_password(username, req.new_password):
-        return JSONResponse({"ok": False, "detail": "Failed to update password"}, status_code=500)
-    return JSONResponse({"ok": True, "detail": "Password updated"})
+@app.post("/api/dev/ticket")
+def dev_ticket(req: DevTicketRequest) -> JSONResponse:
+    """Autonomous build system: webhook endpoint for dev tickets.
+
+    Annabelle or a scheduled job posts a ticket here. If dev_approval_level
+    is "manual", just log and return. Otherwise, invoke Claude to handle it.
+    """
+    if not crm.is_configured():
+        return JSONResponse({"ok": False, "detail": "CRM not configured"}, status_code=400)
+
+    # Get the approval level from settings
+    approval_level = crm.get_setting("dev_approval_level", "manual")
+
+    # Always log the ticket to Airtable
+    ticket_id = f"ticket_{int(time.time() * 1000)}"
+    crm.save_dev_agent_log(
+        ticket_id=ticket_id,
+        action=req.request[:500],
+        approval_level=approval_level,
+        result="Logged"
+    )
+
+    if approval_level == "manual":
+        # Just log and notify, don't execute
+        return JSONResponse({"ok": True, "ticket_id": ticket_id, "status": "logged",
+                           "detail": "Ticket logged. Review and execute in Claude Code."})
+
+    # For low_risk or full_auto, invoke Claude (background thread so webhook returns fast)
+    def _execute_ticket():
+        try:
+            approval_prompt = {
+                "low_risk": "Execute only if low-risk (code formatting, docs, non-destructive). Refuse high-risk changes.",
+                "full_auto": "Execute. Always flag what you did and recommend a human double-check."
+            }.get(approval_level, "Execute only if low-risk.")
+
+            system_prompt = f"""You are an autonomous code/ops agent. Execute the build request below.
+
+Approval level: {approval_level}
+{approval_prompt}
+
+After execution, return a JSON object: {{"success": true/false, "action": "...", "details": "...", "changed_files": [...], "error": ""}}"""
+
+            client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            response = client.messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-5"),
+                max_tokens=2000,
+                system=system_prompt,
+                messages=[{"role": "user", "content": req.request}],
+                timeout=60,
+            )
+
+            result_text = response.content[0].text if response.content else ""
+            try:
+                result_json = json.loads(result_text)
+            except:
+                result_json = {"success": False, "error": f"Could not parse response: {result_text[:500]}"}
+
+            crm.save_dev_agent_log(
+                ticket_id=ticket_id,
+                action=req.request[:500],
+                approval_level=approval_level,
+                result=result_json.get("details", "")[:10000],
+                changed_files=result_json.get("changed_files", []),
+                error=result_json.get("error", "")
+            )
+        except Exception as e:
+            log.error(f"dev_ticket execution failed: {e}")
+            crm.save_dev_agent_log(
+                ticket_id=ticket_id,
+                action=req.request[:500],
+                approval_level=approval_level,
+                error=str(e)[:5000]
+            )
+
+    if approval_level in ("low_risk", "full_auto"):
+        threading.Thread(target=_execute_ticket, daemon=True).start()
+        return JSONResponse({"ok": True, "ticket_id": ticket_id, "status": "queued",
+                           "detail": f"Ticket queued for {approval_level} execution. Check Dev Agent Log in Airtable."})
+
+    return JSONResponse({"ok": False, "detail": "Invalid approval level"}, status_code=400)
 
 
 # Serve the frontend

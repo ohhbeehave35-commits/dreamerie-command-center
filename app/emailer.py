@@ -1,20 +1,23 @@
 """
 Real outbound email for the Command Center, via Gmail SMTP + an app password.
 
-Configure via the Settings panel in the dashboard (preferred -- takes effect
-immediately, no redeploy), or with two env vars as a fallback:
-    GMAIL_ADDRESS       - the sending Gmail address
+Configure with two env vars:
+    GMAIL_ADDRESS       - the sending Gmail address (e.g. vinny@ohhbeehave.com
+                           if it's a Google Workspace address, or a gmail.com one)
     GMAIL_APP_PASSWORD  - a 16-character Gmail App Password (NOT the account
                            password -- generate one at myaccount.google.com/apppasswords,
                            requires 2-Step Verification to be on)
 
-If neither is set, sending is simply "not connected" and the tool says so
+If they're not set, sending is simply "not connected" and the tool says so
 instead of crashing -- same graceful-degrade pattern as crm.py.
 """
 
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
+
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]{2,}$')
 
 from . import crm
 
@@ -43,7 +46,7 @@ def send_email(to: str, subject: str, body: str) -> str:
     address, app_password = get_gmail_address(), get_gmail_app_password()
     if not (address and app_password):
         return "Email isn't connected yet -- connect it from the Settings panel."
-    if not to or "@" not in to:
+    if not to or not _EMAIL_RE.match(to.strip()):
         return f"That doesn't look like a valid email address: {to!r}."
     msg = MIMEText(body)
     msg["Subject"] = subject or "(no subject)"

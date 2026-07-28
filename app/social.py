@@ -16,6 +16,7 @@ dashboard Settings panel) with an env-var fallback -- same pattern as Gmail.
 If it's not set, publishing is simply "not connected" and says so honestly.
 """
 
+import re
 from datetime import datetime, timezone
 
 import os
@@ -23,6 +24,16 @@ import os
 import httpx
 
 from . import crm
+
+_CLAIM_RE = re.compile(
+    r'\b\d[\d,\.]*\s*(%|\+|\$|years?|installs?|clients?|jobs?|reviews?|customers?|projects?|homes?|pools?)',
+    re.I,
+)
+
+
+def extract_claims(content: str) -> list[str]:
+    """Surface numeric/business claims an AI draft might have hallucinated."""
+    return list(dict.fromkeys(m.group(0).strip() for m in _CLAIM_RE.finditer(content)))
 
 PLATFORMS = ["Facebook", "Instagram", "YouTube", "TikTok", "X"]
 POSTS_TABLE = "Social Posts"
@@ -152,9 +163,16 @@ def create_draft(platform: str, content: str, title: str = "", hashtags: str = "
             r.raise_for_status()
             rec_id = r.json()["id"]
         media_line = f"\nMedia: {media_url.strip()}" if media_url.strip() else ""
+        claims = extract_claims(content)
+        claims_line = ""
+        if claims:
+            claims_line = (
+                "\n\n⚠ VERIFY BEFORE PUBLISHING — these claims were AI-generated:\n"
+                + "\n".join(f"  • {c}" for c in claims)
+            )
         return (
             f"DRAFT saved (id {rec_id}) -- {platform}\n"
-            f"Title: {title or '(none)'}{media_line}\n\n{content}\n\n{hashtags}".strip()
+            f"Title: {title or '(none)'}{media_line}\n\n{content}\n\n{hashtags}{claims_line}".strip()
         )
     except Exception as e:
         return f"Couldn't save that draft: {type(e).__name__}: {e}"
@@ -184,6 +202,43 @@ def list_posts(status: str = "", limit: int = 10) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Couldn't read the post queue: {type(e).__name__}: {e}"
+
+
+def list_posts_structured(status: str = "", limit: int = 25) -> list[dict]:
+    """Same queue as list_posts(), but as records for the dashboard Content
+    panel instead of a chat-readable string. Sorted newest first (list_posts
+    sorts by Title, which is meaningless for a review queue). Never raises --
+    returns [] on any failure, so a queue hiccup can't blank the whole panel.
+    """
+    if not crm.is_configured():
+        return []
+    try:
+        tid = _ensure_posts_table()
+        params = {"pageSize": str(max(1, min(limit, 100)))}
+        if status:
+            params["filterByFormula"] = "{Status}='" + status.replace("'", "") + "'"
+        with httpx.Client(timeout=30) as c:
+            r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}",
+                      headers=crm._headers(), params=params)
+            r.raise_for_status()
+        out = []
+        for rec in r.json().get("records", []):
+            f = rec.get("fields", {})
+            out.append({
+                "id": rec["id"],
+                "title": f.get("Title", ""),
+                "platform": f.get("Platform", ""),
+                "content": f.get("Content", ""),
+                "hashtags": f.get("Hashtags", ""),
+                "media_url": f.get("Media URL", ""),
+                "status": f.get("Status", ""),
+                "result": f.get("Result", ""),
+                "created": rec.get("createdTime", ""),
+            })
+        out.sort(key=lambda p: p.get("created", ""), reverse=True)
+        return out
+    except Exception:
+        return []
 
 
 def publish_post(post_id: str) -> str:
@@ -229,33 +284,3 @@ def publish_post(post_id: str) -> str:
             return f"Zapier rejected it (HTTP {hook.status_code}) -- marked Failed. Check the Zap is on."
     except Exception as e:
         return f"Couldn't publish that post: {type(e).__name__}: {e}"
-
-def list_posts_raw(limit: int = 60) -> list:
-    """Structured post list for the Content tab. See assets.list_assets_raw for
-    why this exists alongside the string-returning list_posts()."""
-    if not crm.is_configured():
-        return []
-    try:
-        tid = _ensure_posts_table()
-        with httpx.Client(timeout=30) as c:
-            r = c.get(
-                f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}",
-                headers=crm._headers(),
-                params={"pageSize": str(max(1, min(limit, 100)))},
-            )
-            r.raise_for_status()
-        out = []
-        for rec in r.json().get("records", []):
-            f = rec.get("fields", {})
-            out.append({
-                "id": rec.get("id", ""),
-                "platform": f.get("Platform", ""),
-                "content": f.get("Content", ""),
-                "status": f.get("Status", "Draft"),
-                "media_url": f.get("Media URL", "") or f.get("MediaURL", ""),
-                "created": rec.get("createdTime", ""),
-            })
-        out.sort(key=lambda a: a.get("created", ""), reverse=True)
-        return out
-    except Exception:
-        return []

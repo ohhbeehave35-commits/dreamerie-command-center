@@ -1,3 +1,6 @@
 .env
 __pycache__/
 *.pyc
+.pre-fullversion-app/
+.pre-fullversion-static/
+__pycache__/

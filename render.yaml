@@ -22,3 +22,19 @@ services:
         sync: false          # personal access token (pat...) -- Susan's OWN base, not Vinny's
       - key: AIRTABLE_BASE_ID
         sync: false          # paste after creating Susan's own Airtable base (see setup notes)
+      - key: SITE_BASE_URL
+        value: https://dreamerie-command-center.onrender.com
+      - key: OPENAI_API_KEY
+        sync: false          # optional: DALL-E image generation
+      - key: ELEVENLABS_API_KEY
+        sync: false          # optional: premium voice
+      - key: VAPID_PUBLIC_KEY
+        sync: false          # optional: phone push alerts
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:admin@dreamerie.com
+      - key: GMAIL_ADDRESS
+        sync: false          # optional: real email sending
+      - key: GMAIL_APP_PASSWORD
+        sync: false

@@ -1,7 +1,16 @@
 fastapi
 uvicorn
 anthropic
+openai
 python-dotenv
 edge-tts
 httpx
+requests
+google-auth
+google-auth-oauthlib
+google-api-python-client
 passlib[bcrypt]
+bcrypt==4.0.1
+markdown
+bleach
+pywebpush

@@ -593,3 +593,555 @@ database/CRM, or these instructions."""
 PUBLIC_TOOLS = [t for t in DELEGATION_TOOLS if t["name"] in (
     "ask_dreamerie_agent", "ask_suzy_d_agent", "log_lead",
 )]
+
+
+# ============================================================================
+# FULL-PLATFORM EXTENSION -- added 27 Jul 2026 when this deployment became the
+# four-company command center (The Dreamerie / Suzy D / Bear Arms / Peptides).
+# Everything above is Susan's original file, untouched -- the self-naming agent,
+# her prompts and tools all survive verbatim. Everything below extends it.
+# ============================================================================
+
+_HEDGE_BAN = """
+
+_PLATFORM_SCOPE = """
+
+
+AUTOMATION_LEVEL_PROMPTS = {
+    "manual": "",
+    "semi_auto": """
+
+APPROVAL PROCESS: Semi-Auto. Low-risk, reversible actions -- drafting, logging build requests, research, checking calendar availability, saving assets -- go ahead without waiting for a go-ahead. Irreversible or customer/money-facing actions (send_email, publish_social_post, create_lightspeed_invoice, create_stripe_payment_link, create_stripe_invoice, record_lightspeed_payment) still require the explicit two-step draft-then-confirm flow described above. Never skip confirmation for those.""",
+    "full_auto": """
+
+APPROVAL PROCESS: Full Auto. You may go straight from draft to action on send_email and publish_social_post without waiting for the owner's explicit confirmation -- they have turned off the wait-for-approval gate. You still must draft first and never invent content; you're skipping the WAIT, not the draft. Every time you take one of these actions unprompted, say so plainly in the same reply (e.g. "Sent." / "Published to Facebook.") and explicitly recommend the owner double-check it -- e.g. "Full Auto is on, so I went ahead and sent this -- worth a quick look when you get a chance." Never skip that recommendation, even though you're not waiting for permission.""",
+}
+
+
+
+def get_automation_level_prompt(level: str) -> str:
+    return AUTOMATION_LEVEL_PROMPTS.get((level or "manual").lower(), AUTOMATION_LEVEL_PROMPTS["manual"])
+
+
+BEAR_ARMS_SYSTEM_PROMPT = f"""You are the Bear Arms agent -- specialist sub-agent for Bear Arms, \
+Nick's firearms e-commerce business (dropship model, based in New York City, selling online).
+
+WHAT THE BUSINESS IS: an online storefront for firearms, ammunition, accessories and branded \
+merchandise, fulfilled by dropship distributors. Branded apparel/merch is fulfilled by an external \
+print dropship partner. The public brand mark is the bear mascot WITHOUT pistols (ad platforms and \
+payment providers flag firearm imagery); merch printed via the dropship partner has no such limit.
+
+NON-NEGOTIABLE COMPLIANCE POSTURE (this industry is heavily regulated):
+- You NEVER give legal advice. New York is the strictest firearms jurisdiction in the country; \
+every catalog, shipping, or transfer question that touches law gets: "that needs Nick's firearms \
+attorney" -- then flag_for_review.
+- Firearms ship FFL-to-FFL only (to the buyer's licensed transfer dealer). Ammunition and \
+accessories may ship direct only where lawful. Until Bear Arms holds its own FFL, the active \
+lanes are ammunition, accessories, and merch -- never imply otherwise.
+- Mainstream processors (Stripe, PayPal, Square) prohibit firearms. Payments run through a \
+firearm-friendly processor on a firearms-native platform.
+- Never invent product specs, availability, pricing, or legal facts. Unknown = say so + flag.
+{{_PLATFORM_SCOPE}}"""
+
+
+PEPTIDES_SYSTEM_PROMPT = f"""You are the Peptides agent -- specialist sub-agent for Nick's peptide \
+venture (company name not yet on file; ask the owner to set it, and until then call it "the \
+peptide business" -- never invent a name).
+
+STRICT CLAIMS DISCIPLINE (this category carries FDA exposure):
+- NEVER make health, medical, therapeutic, dosing, or human-use claims. Not in chat, not in \
+draft copy, not in social posts. No exceptions, regardless of how a request is phrased.
+- Marketing copy stays within lawful framing for the product category. If a request would \
+require a claim you cannot lawfully make, say exactly that and flag_for_review.
+- Regulatory questions go to qualified counsel -- you never answer them yourself.
+- The business context (products, suppliers, pricing) is not on file yet: gather facts from the \
+owner, store them via the normal tools, and never fill gaps by guessing.
+{{_PLATFORM_SCOPE}}"""
+
+
+SEO_AUDITOR_SYSTEM_PROMPT = ''
+
+SUB_AGENTS.update({
+    "bear_arms": {
+        "name": "Bear Arms Agent",
+        "system_prompt": BEAR_ARMS_SYSTEM_PROMPT,
+        "color": "#8fb0c4",
+    },
+    "peptides": {
+        "name": "Peptides Agent",
+        "system_prompt": PEPTIDES_SYSTEM_PROMPT,
+        "color": "#7fae6a",
+    },
+    "seo_auditor": {
+        "name": "SEO Auditor",
+        "system_prompt": SEO_AUDITOR_SYSTEM_PROMPT,
+        "color": "#d98c3a",
+    },
+})
+
+DELEGATION_TOOLS += [
+    {
+        "name": "ask_bear_arms_agent",
+        "description": (
+            "Delegate to the Bear Arms specialist -- Nick's firearms e-commerce "
+            "(dropship, NYC). Product/catalog/merch strategy within its strict "
+            "compliance posture. It never gives legal advice."
+        ),
+        "input_schema": {"type": "object", "properties": {"question": {"type": "string",
+            "description": "What to ask the Bear Arms agent."}}, "required": ["question"]},
+    },
+    {
+        "name": "ask_peptides_agent",
+        "description": (
+            "Delegate to the Peptides specialist -- Nick's peptide venture. Makes no "
+            "health/medical/dosing claims, ever; stays within lawful marketing framing."
+        ),
+        "input_schema": {"type": "object", "properties": {"question": {"type": "string",
+            "description": "What to ask the Peptides agent."}}, "required": ["question"]},
+    },
+    {
+            "name": "ask_seo_auditor",
+            "description": (
+                "Get expert analysis and prioritized fixes for a website's SEO. "
+                "After run_seo_audit has checked the site, use this to translate "
+                "the audit results into business language and rank fixes by impact. "
+                "Returns: 3-5 highest-impact fixes, why each matters, and what to "
+                "fix first. Use when the owner wants a sales-focused SEO summary for a "
+                "prospect or his own site."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "audit_results": {
+                        "type": "string",
+                        "description": "The full run_seo_audit output (copy-paste)."
+                    },
+                    "prospect_context": {
+                        "type": "string",
+                        "description": "Industry, site age, current challenges. E.g. 'Pool service, 2 years old, no online booking'."
+                    },
+                },
+                "required": ["audit_results"],
+            },
+        },
+    {
+            "name": "generate_image",
+            "description": (
+                "Generate a marketing image or graphic from a text description using AI. "
+                "Routes to ChatGPT (DALL-E 3) or Grok (xAI) based on customer preference "
+                "in Settings. Use for social media graphics, email visuals, thumbnails, "
+                "or any static image a customer or the owner asks for. Result is "
+                "automatically saved to the asset library. The tool result contains the "
+                "exact image URL -- ALWAYS include that URL verbatim in your reply, "
+                "never drop or paraphrase it away."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Detailed description of the image to generate -- subject, style, mood, branding cues (e.g. the business gold/dark palette, honey bee, etc.)."},
+                    "aspect_ratio": {"type": "string", "description": "Optional aspect ratio, e.g. '1:1', '16:9', '9:16'. Leave blank for the default."},
+                },
+                "required": ["prompt"],
+            },
+        },
+    {
+            "name": "generate_video",
+            "description": (
+                "Generate a short marketing video or animation clip from a text "
+                "description using AI (xAI Grok Imagine). Use for social clips, "
+                "YouTube intros/outros, or service-process animations. Takes roughly "
+                "25-90 seconds to complete -- tell the person it's generating before "
+                "calling this, don't leave them guessing. Result is automatically "
+                "saved to the asset library. The tool result contains the exact video "
+                "URL -- ALWAYS include that URL verbatim in your reply, never drop or "
+                "paraphrase it away."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Detailed description of the video/animation to generate."},
+                    "duration": {"type": "integer", "description": "Length in seconds, 1-15. Default 8."},
+                    "aspect_ratio": {"type": "string", "description": "Optional aspect ratio: '16:9' for YouTube, '9:16' for Shorts/TikTok/Reels, '1:1' for square."},
+                    "image_url": {"type": "string", "description": "Optional: an existing image URL to animate (image-to-video) instead of generating from scratch."},
+                },
+                "required": ["prompt"],
+            },
+        },
+    {
+            "name": "predict_video_cost",
+            "description": (
+                "OWNER-ONLY. Log an initial $ cost prediction for a video project "
+                "BEFORE any AI-gen shots are made -- estimate credits/API spend "
+                "(e.g. Higgsfield generations, ElevenLabs narration), not labor or "
+                "time. Call this at the very start of planning a video, before "
+                "generation begins."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Video project name, e.g. 'Nobody Noticed the Bees Were Gone'."},
+                    "predicted_cost": {"type": "number", "description": "Predicted total dollar cost."},
+                    "notes": {"type": "string", "description": "How you arrived at this estimate (shot count, credit rates, etc)."},
+                },
+                "required": ["project", "predicted_cost"],
+            },
+        },
+    {
+            "name": "log_cost_checkpoint",
+            "description": (
+                "OWNER-ONLY. Log a mid-cutting cost re-estimate against an "
+                "existing prediction -- checkpoint 1 partway through editing, "
+                "checkpoint 2 later on, as real spend becomes visible. Requires "
+                "predict_video_cost to have been called first for this project."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Video project name (must match the original prediction)."},
+                    "checkpoint": {"type": "integer", "enum": [1, 2], "description": "Which checkpoint this is."},
+                    "current_cost": {"type": "number", "description": "Actual spend so far, re-estimated to completion if useful."},
+                    "notes": {"type": "string", "description": "What's changed since the prediction (more regens needed, etc)."},
+                },
+                "required": ["project", "checkpoint", "current_cost"],
+            },
+        },
+    {
+            "name": "log_actual_video_cost",
+            "description": (
+                "OWNER-ONLY. Log the final real $ cost once a video project is "
+                "finished, and record the variance against the original "
+                "prediction plus a lesson learned for next time."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Video project name (must match the original prediction)."},
+                    "actual_cost": {"type": "number", "description": "Final total dollar cost."},
+                    "lesson": {"type": "string", "description": "Why the prediction was right or wrong, for next time."},
+                },
+                "required": ["project", "actual_cost"],
+            },
+        },
+    {
+            "name": "get_video_cost_accuracy",
+            "description": (
+                "OWNER-ONLY. Report predicted-vs-actual accuracy for one named "
+                "video project, or a summary across all completed ones if no "
+                "project is given. Use when the owner asks how a prediction did, or "
+                "wants to see the track record before quoting a new project."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Video project name, or leave blank for an overall summary."},
+                },
+                "required": [],
+            },
+        },
+    {
+            "name": "run_diagnostic",
+            "description": (
+                "OWNER-ONLY. Actively probe every integration (Stripe, HubSpot, "
+                "Twilio, Airtable, Anthropic, Buildertrend, DocuSign, Gmail, "
+                "Calendar, ElevenLabs, xAI) and return a per-service status "
+                "report. Use whenever the owner asks 'what's connected?', 'is X "
+                "working?', 'what's broken?', 'health check', 'system status', "
+                "or after an outage / redeploy. Summarize the result plainly: "
+                "list anything failing (red), anything unconfigured, and end "
+                "with the overall summary. For details the owner can also open "
+                "/diagnostic in a browser."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    {
+            "name": "run_seo_audit",
+            "description": (
+                "USE THIS, NOT scrape_page, ANY TIME the words 'SEO audit', 'SEO report', "
+                "or 'SEO check' appear for a specific site -- this IS the SEO audit tool. "
+                "OWNER-ONLY. Runs a real technical SEO checklist on a public web page: "
+                "title tag, meta description, mobile viewport tag, canonical tag, H1 count, "
+                "image alt-text coverage, schema.org structured data, Open Graph tags, "
+                "robots.txt, XML sitemap, HTTPS, and response time. Every line in the "
+                "report is a specific check that was actually run, not an LLM's impression "
+                "of the page. scrape_page is still the right tool for general content "
+                "reading (pricing pages, articles, non-SEO questions about a site) -- but "
+                "never for an SEO audit/report request."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to audit, e.g. https://example.com",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    {
+            "name": "scrape_page",
+            "description": (
+                "OWNER-ONLY. Fetch a public web page and return its readable text -- "
+                "title, meta description, and visible body content. General purpose: a "
+                "prospect's website (booking capability, services offered, overall "
+                "footprint), a competitor's pricing page, a YouTube or TikTok page "
+                "(title/description metadata), or an article the owner wants read. Heavy-"
+                "JavaScript pages may return limited text -- report what actually came "
+                "back, never pad it. A DNS failure or SSL error on a business's site is "
+                "itself a valuable finding, not a dead end. Do NOT use this for an SEO "
+                "audit or SEO report request -- use run_seo_audit instead, it runs an "
+                "actual checklist instead of reading raw page text."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to fetch, e.g. https://example.com",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    {
+            "name": "list_capabilities",
+            "description": (
+                "Show the Skill Toolbox -- what the assistant can do and what to say to "
+                "trigger each capability. Use whenever the user asks 'what can you do', "
+                "'help', 'what are my options', seems stuck or unsure how to phrase a "
+                "request, or asks how to make a feature happen. Returns grouped "
+                "capability cards with a ready-to-say example phrase for each. Relay "
+                "them conversationally -- pick the groups relevant to what the user "
+                "was just trying to do."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Optional keyword filter, e.g. 'invoice', 'social', 'prospect'.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    {
+            "name": "flag_for_review",
+            "description": (
+                "Call this instead of answering when a question can't be resolved from "
+                "your tools, a pricing lookup, or a search -- e.g. a legal or liability "
+                "question, a safety guarantee, a search that came back empty, or "
+                "anything where a wrong answer could actually hurt someone. This logs "
+                "the question for a human to review. Never fill the gap with a "
+                "plausible-sounding answer instead of calling this -- an honest "
+                "'checking with the team' beats a guess every time."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The question that couldn't be answered, in the customer's/user's own words."},
+                    "reason": {"type": "string", "description": "Why it couldn't be resolved -- e.g. 'no search results', 'liability question', 'sources conflicted'."},
+                },
+                "required": ["question", "reason"],
+            },
+        },
+    {
+            "name": "log_skill_note",
+            "description": (
+                "Save a durable note about a lesson, reusable pattern, or gotcha you "
+                "discovered -- something worth remembering for future dev work, not a "
+                "one-off answer. Different from log_build_request: that's for a "
+                "missing CAPABILITY someone wants built; this is for KNOWLEDGE worth "
+                "keeping (a workaround that worked, a recurring question and its "
+                "correct answer, a mistake to avoid next time). Use it when you notice "
+                "something like that, not just when asked to -- it's how what you "
+                "learn actually survives past this conversation."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short title, e.g. 'Instagram posts need a photo attached'."},
+                    "note": {"type": "string", "description": "The actual lesson/pattern -- what happened, why it matters, how to apply it next time."},
+                    "category": {"type": "string", "description": "Optional short tag, e.g. 'social', 'pricing', 'scheduling'."},
+                },
+                "required": ["title", "note"],
+            },
+        },
+    {
+            "name": "set_speaker",
+            "description": (
+                "Call this the moment a message introduces a DIFFERENT person now "
+                "speaking under this same shared login -- e.g. 'this is Jane', "
+                "'Jane here', 'my aunt Carol wants to ask something'. Pass just "
+                "their first name. This tags everything they say from now on "
+                "under their own name in the conversation log, instead of it "
+                "blending into the primary owner's history. Call it again with an "
+                "empty name when the primary owner is back speaking themselves "
+                "(e.g. 'it's me again', 'ok she's done'). Do this silently in the "
+                "background -- acknowledge the person naturally in your reply, "
+                "don't explain the mechanism or announce that you logged anything."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "First name of whoever is now speaking, or an empty string to switch back to the primary owner."},
+                },
+                "required": ["name"],
+            },
+        },
+    {
+            "name": "list_dropbox_folder",
+            "description": (
+                "OWNER-ONLY. List the files and folders in the owner's Dropbox at a "
+                "given path. Path defaults to root. Use when the owner asks 'what's "
+                "in my Dropbox?' or 'show me the shop folder'. Returns a list "
+                "of {name, path, kind, size, modified}."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Dropbox folder path, e.g. '/Dreamerie' or '' for root."},
+                },
+            },
+        },
+    {
+            "name": "search_dropbox",
+            "description": (
+                "OWNER-ONLY. Search the owner's entire Dropbox (filenames AND content) "
+                "for a query. Use when he says 'find the product photos' or "
+                "'where's that bee inspection photo'. Returns up to 25 matches."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for."},
+                },
+                "required": ["query"],
+            },
+        },
+    {
+            "name": "save_dropbox_file",
+            "description": (
+                "OWNER-ONLY. Take a Dropbox file at the given path, create a "
+                "public shared link, and register it in the Asset Library so it "
+                "can be reused in social posts, emails, and proposals. Use after "
+                "search_dropbox finds the right file. Returns the shareable URL."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Full Dropbox path of the file."},
+                    "name": {"type": "string", "description": "Short memorable name to save under. Optional — defaults to the filename."},
+                    "tags": {"type": "string", "description": "Comma-separated tags. Optional."},
+                },
+                "required": ["path"],
+            },
+        },
+    {
+            "name": "list_drive_files",
+            "description": (
+                "OWNER-ONLY. List files in the owner's Google Drive (root by default, "
+                "or a specific folder id). Use when he asks about Drive contents. "
+                "Returns {id, name, mime, kind, size, modified, url}."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "folder_id": {"type": "string", "description": "Drive folder id. Optional — defaults to root."},
+                },
+            },
+        },
+    {
+            "name": "search_drive",
+            "description": (
+                "OWNER-ONLY. Search Google Drive by filename OR full-text content. "
+                "Returns up to 25 matches. Use before save_drive_file to find "
+                "what to save."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for."},
+                },
+                "required": ["query"],
+            },
+        },
+    {
+            "name": "save_drive_file",
+            "description": (
+                "OWNER-ONLY. Register a Google Drive file (by file id) in the "
+                "Asset Library so it can be reused. Returns the webViewLink."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_id": {"type": "string", "description": "Google Drive file id (from search_drive)."},
+                    "name": {"type": "string", "description": "Short memorable name. Optional — defaults to Drive filename."},
+                    "tags": {"type": "string", "description": "Comma-separated tags. Optional."},
+                },
+                "required": ["file_id"],
+            },
+        },
+]
+
+TOOL_NAME_TO_AGENT_KEY.update({
+    "ask_bear_arms_agent": "bear_arms",
+    "ask_peptides_agent": "peptides",
+    "ask_seo_auditor": "seo_auditor",
+})
+
+# ---- per-mode tool allowlists (5 modes; combined applies no filter) ----------
+_SHARED_MODE_TOOLS = {
+    "log_lead", "find_leads", "log_event", "find_events", "log_build_request",
+    "set_agent_name", "draft_email", "send_email",
+    "draft_social_post", "list_social_posts", "publish_social_post",
+    "save_asset", "find_assets",
+    "generate_image", "generate_video",
+    "predict_video_cost", "log_cost_checkpoint", "log_actual_video_cost",
+    "get_video_cost_accuracy",
+    "run_diagnostic", "run_seo_audit", "ask_seo_auditor", "scrape_page",
+    "list_capabilities", "flag_for_review", "log_skill_note", "set_speaker",
+    "list_dropbox_folder", "search_dropbox", "save_dropbox_file",
+    "list_drive_files", "search_drive", "save_drive_file",
+}
+MODE_TOOLS = {
+    "dreamerie": _SHARED_MODE_TOOLS | {"ask_dreamerie_agent"},
+    "suzy_d":    _SHARED_MODE_TOOLS | {"ask_suzy_d_agent"},
+    "bear_arms": _SHARED_MODE_TOOLS | {"ask_bear_arms_agent"},
+    "peptides":  _SHARED_MODE_TOOLS | {"ask_peptides_agent"},
+}
+MODE_PROMPTS = {
+    "dreamerie": "\n\nACTIVE MODE: The Dreamerie. Stay on Dreamerie shop topics this session; leave the other businesses out unless asked.",
+    "suzy_d": "\n\nACTIVE MODE: Suzy D. Stay on Suzy D / TikTok growth topics this session; leave the other businesses out unless asked.",
+    "bear_arms": "\n\nACTIVE MODE: Bear Arms. Stay on Bear Arms topics this session, inside its compliance posture; leave the other businesses out unless asked.",
+    "peptides": "\n\nACTIVE MODE: Peptides. Stay on the peptide business this session, inside its claims discipline; leave the other businesses out unless asked.",
+}
+
+# main.py (ported from the flagship) imports these two names for its mode filter;
+# alias them to the two primary modes so the import never breaks.
+OHH_BEEHAVE_MODE_TOOLS = MODE_TOOLS["dreamerie"]
+STINGER_MODE_TOOLS = MODE_TOOLS["suzy_d"]
+
+# ---- four-business addendum threaded into the self-naming prompt builders ----
+_FOUR_BUSINESS_ADDENDUM = """
+
+THE OTHER TWO BUSINESSES ON THIS DASHBOARD (Susan runs these for Nick, who works days):
+- Bear Arms -- Nick's firearms e-commerce (dropship, NYC). Delegate specifics to \
+ask_bear_arms_agent. Compliance rules are absolute: no legal advice ever (NY firearms \
+attorney), firearms move FFL-to-FFL only, active lanes until an FFL exists are ammo / \
+accessories / merch, payments via a firearm-friendly processor only.
+- Nick's peptide venture (name not set yet -- never invent one). Delegate to \
+ask_peptides_agent. Zero health/medical/dosing claims anywhere, in any phrasing.
+When the active mode is one of these, keep Dreamerie and Suzy D out of the reply unless asked."""
+
+_build_main_brain_prompt_base = build_main_brain_prompt
+def build_main_brain_prompt(agent_name):
+    return _build_main_brain_prompt_base(agent_name) + _FOUR_BUSINESS_ADDENDUM
+
+# Fallback constants for import sites that want a static prompt (the per-request
+# path should always call the builders so the self-chosen name is honored).
+MAIN_BRAIN_SYSTEM_PROMPT = build_main_brain_prompt(None)
+PUBLIC_SYSTEM_PROMPT = build_public_prompt(None) if True else ""

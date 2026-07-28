@@ -51,6 +51,27 @@ def get_session_secret() -> bytes:
     return _SESSION_SECRET
 
 
+def validate_username(username: str) -> tuple:
+    """Return (ok: bool, reason: str). Alphanumeric + underscore/dash, 3–32 chars, no colons."""
+    if not username or len(username) < 3:
+        return False, "Username must be at least 3 characters."
+    if len(username) > 32:
+        return False, "Username must be 32 characters or fewer."
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+    if not all(c in allowed for c in username):
+        return False, "Username may only contain letters, numbers, underscores, and dashes."
+    return True, ""
+
+
+def validate_password(password: str) -> tuple:
+    """Return (ok: bool, reason: str). Enforces min 8 chars + at least one digit or symbol."""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters."
+    if not any(c.isdigit() or not c.isalpha() for c in password):
+        return False, "Password must contain at least one number or symbol."
+    return True, ""
+
+
 def hash_password(password: str) -> str:
     """Hash a plaintext password."""
     return _pwd_context.hash(password)
@@ -245,10 +266,32 @@ def delete_user(username: str) -> bool:
             r = c.delete(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}/{user['record_id']}",
                          headers=crm._headers())
             r.raise_for_status()
+        _user_exists_cache.pop(username, None)  # kill cached "exists" so their session invalidates immediately
         return True
     except Exception as e:
         print(f"Error deleting user {username}: {e}")
         return False
+
+
+# Cheap in-memory cache of "does this username still exist?" so the
+# access-gate check doesn't add a per-request Airtable round-trip.
+# TTL 5 min: strictly bounds how long a deleted user's cookie can outlive them.
+# delete_user() invalidates its entry immediately so the same-process case is instant.
+_USER_EXISTS_TTL = 300
+_user_exists_cache: dict = {}
+
+
+def user_exists_cached(username: str) -> bool:
+    """Return True if the username exists in the Users table. Cached for 5 min."""
+    if not username or not crm.is_configured():
+        return False
+    now = time.time()
+    entry = _user_exists_cache.get(username)
+    if entry and now - entry[1] < _USER_EXISTS_TTL:
+        return entry[0]
+    exists = get_user(username) is not None
+    _user_exists_cache[username] = (exists, now)
+    return exists
 
 
 def create_session_token(username: str, ttl_days: int = 30) -> str:
