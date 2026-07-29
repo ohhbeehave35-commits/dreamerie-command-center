@@ -3416,7 +3416,13 @@ def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
                 crm.set_user_setting(req.username, "tts_voice_override", get_tts_voice())
             except Exception as e:
                 log.warning(f"Could not set defaults for new user {req.username}: {e}")
+        support.record_note("user_added", f"{req.username} ({req.role})", path="/api/users")
         return JSONResponse({"ok": True, "detail": "User created"})
+    # Put the REAL reason on the support page too. The middleware only records
+    # "POST /api/users -> 400"; without this, Vinny sees that Susan's invite
+    # failed and still has to ask her what it said, which is the exact relay
+    # the remote-support view exists to remove.
+    support.record_note("user_add_failed", why or "no reason given", path="/api/users")
     return JSONResponse({"ok": False, "detail": why or "Could not create the user."}, status_code=400)
 
 

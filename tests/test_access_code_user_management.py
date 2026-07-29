@@ -93,6 +93,25 @@ def test_add_user_failure_reports_the_REAL_reason(gated, monkeypatch):
     assert "already exists or error" not in detail
 
 
+def test_add_user_failure_lands_on_the_support_page(gated, monkeypatch):
+    """The remote-support view exists so Vinny doesn't have to ask Susan what
+    the error said. A failed invite has to carry its REASON into the buffer --
+    the request middleware only records "POST /api/users -> 400".
+    """
+    monkeypatch.setattr(m.users, "validate_username", lambda u: (True, ""))
+    monkeypatch.setattr(m.users, "validate_password", lambda p: (True, ""))
+    monkeypatch.setattr(m.users, "add_user", lambda u, e, p, r: (
+        False, 'The user store rejected it (HTTP 422): Unknown field name: "CreatedAt"'))
+
+    _unlocked().post("/api/users", json={
+        "username": "nick", "email": "nick@example.com",
+        "password": "a-strong-password-1", "role": "owner",
+    })
+    blob = str(support.report())
+    assert "user_add_failed" in blob, "the failure never reached the support page"
+    assert "CreatedAt" in blob, "the reason was dropped on the way to the support page"
+
+
 def test_users_table_migrates_its_columns_on_an_existing_table(monkeypatch):
     """The Users table was the only table that skipped _ensure_field on the
     already-exists path. Airtable does not add columns on record-create, it
