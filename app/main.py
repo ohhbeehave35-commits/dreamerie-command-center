@@ -1615,6 +1615,82 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 name = (block.input.get("name") or "").strip()[:80]
                 speaker_name = name  # "" deliberately clears back to the owner
                 answer = f"Tagging messages as {name} from now on." if name else "Back to the primary owner."
+            elif block.name == "client_interview":
+                delegated_to.append("Client Interview")
+                from . import onboarding as _ob
+                _act = (block.input.get("action") or "next").strip().lower()
+                _client = block.input.get("client", "")
+                if _act == "record":
+                    _ok, _msg = _ob.record_answer(
+                        _client, block.input.get("question_id", ""),
+                        block.input.get("answer", ""))
+                    if not _ok:
+                        answer = _msg
+                    else:
+                        _nx = _ob.next_question(_client)
+                        answer = (
+                            f"Saved that answer word for word.\n\n"
+                            + (f"All {_nx.get('total')} questions are done for {_client}. "
+                               f"Say 'status' any time to see the profile."
+                               if _nx.get("done") else
+                               f"({_nx.get('answered')}/{_nx.get('total')} answered"
+                               + (f", {_nx['remaining_required']} required left"
+                                  if _nx.get("remaining_required") else "")
+                               + f")\n\nNext question [{_nx.get('id')}]:\n{_nx.get('question')}")
+                        )
+                elif _act == "status":
+                    answer = _ob.readiness(_client)
+                elif _act == "build_persona":
+                    _ok, _text = _ob.build_persona(_client)
+                    if not _ok:
+                        answer = _text
+                    else:
+                        _slug = crm.create_artifact(f"{_client} — assistant persona", _text)
+                        answer = _text + (
+                            f"\n\nSaved at /artifact/{_slug}" if _slug else
+                            "\n\n(Not saved -- the artifact store isn't reachable.)")
+                elif _act == "recall":
+                    _r = _ob.recall(_client, block.input.get("question", ""))
+                    if not _r["reachable"]:
+                        answer = (f"I couldn't reach the client profile store, so I can't "
+                                  f"tell you what {_client} said. That's different from "
+                                  f"them not having said it.")
+                    elif not _r["found"] and not _r["never_asked"]:
+                        answer = (f"There's no interview on file for {_client} at all. "
+                                  f"Nothing has been captured, so anything I told you "
+                                  f"about them would be invented. Run the interview.")
+                    else:
+                        _parts = []
+                        if _r["found"]:
+                            _parts.append(
+                                f"What {_client} actually said (quote this, don't "
+                                f"rephrase it):\n\n" + "\n\n".join(
+                                    f'Q: {h["question"]}\nA: "{h["answer"]}"'
+                                    for h in _r["found"]))
+                        if _r["never_asked"]:
+                            _parts.append(
+                                "NEVER ASKED — I have no answer for these, and I won't "
+                                "guess:\n" + "\n".join(
+                                    f'  - {n["question"]}' for n in _r["never_asked"]))
+                        answer = "\n\n".join(_parts)
+                        crm.log_verification(
+                            f"{_client}: {block.input.get('question','')}",
+                            "Ground Truth", source="client onboarding interview",
+                            detail=(_r["found"][0]["answer"][:200] if _r["found"] else "no answer captured"))
+                else:
+                    _nx = _ob.next_question(_client)
+                    if _nx.get("error"):
+                        answer = _nx["error"]
+                    elif _nx.get("done"):
+                        answer = (f"The interview for {_client} is complete "
+                                  f"({_nx['answered']}/{_nx['total']}). "
+                                  f"Say 'status' for the full profile.")
+                    else:
+                        answer = (
+                            f"Question {_nx['answered'] + 1} of {_nx['total']} for {_client}"
+                            + (" (required)" if _nx.get("required") else " (optional)")
+                            + f" [{_nx['id']}]:\n\n{_nx['question']}"
+                        )
             elif block.name == "draft_email":
                 delegated_to.append("Email (draft)")
                 to = block.input.get("to", "")

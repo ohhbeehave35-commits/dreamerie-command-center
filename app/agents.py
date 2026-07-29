@@ -1048,6 +1048,35 @@ DELEGATION_TOOLS += [
             },
         },
     {
+            "name": "client_interview",
+            "description": (
+                "OWNER-ONLY. Run the onboarding interview that teaches this Command "
+                "Center who the business is. Call with action='next' to get the next question "
+                "to ask (ONE at a time -- never dump the whole list). Call with action='record' "
+                "plus question_id and the answer IMMEDIATELY after they answer, before asking "
+                "the next one -- an interview that saves at the end loses everything if it's "
+                "interrupted. Record the answer VERBATIM, in their words; do not tidy it up or "
+                "summarize it. action='status' reports what's captured and what's still missing.\n"
+                "action='recall' is the one to reach for BEFORE answering any question about the "
+                "business -- it returns what was ACTUALLY SAID, word for word, so you can quote "
+                "it instead of generating something plausible, and tells you which questions were "
+                "NEVER ASKED so you can say 'nobody captured that' rather than guessing. Quote "
+                "the answer; never paraphrase it into a new fact."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["next", "record", "status", "recall", "build_persona"],
+                               "description": "next = get the question to ask; record = save an answer; status = what's captured; recall = look up what was ACTUALLY SAID."},
+                    "question": {"type": "string", "description": "For recall: what you want to know, e.g. 'pricing' or 'what they don't do'."},
+                    "client": {"type": "string", "description": "The business this interview is about."},
+                    "question_id": {"type": "string", "description": "For record: which question was answered."},
+                    "answer": {"type": "string", "description": "For record: the answer, VERBATIM."},
+                },
+                "required": ["action", "client"],
+            },
+        },
+    {
             "name": "list_dropbox_folder",
             "description": (
                 "OWNER-ONLY. List the files and folders in the owner's Dropbox at a "
@@ -1158,7 +1187,7 @@ _SHARED_MODE_TOOLS = {
     "predict_video_cost", "log_cost_checkpoint", "log_actual_video_cost",
     "get_video_cost_accuracy",
     "run_diagnostic", "run_seo_audit", "ask_seo_auditor", "scrape_page",
-    "list_capabilities", "flag_for_review", "log_skill_note", "set_speaker",
+    "list_capabilities", "flag_for_review", "log_skill_note", "set_speaker", "client_interview",
     "list_dropbox_folder", "search_dropbox", "save_dropbox_file",
     "list_drive_files", "search_drive", "save_drive_file",
 }
