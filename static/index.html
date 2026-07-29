@@ -929,6 +929,7 @@
   // Wrap fetch so every failed or 5xx call reports itself, with how long it
   // hung first -- a 25s hang then failure is the free-tier cold start,
   // and seeing that number is what separates "server down" from "server waking".
+  let _sessionGone = false;   // set once when the session proves dead
   const _origFetch = window.fetch.bind(window);
   window.fetch = function(input, init) {
     let path = '';
@@ -943,6 +944,18 @@
       if (res.status >= 500) {
         ccReport('client_error', { path: path, method: method, status: res.status,
           detail: 'server answered ' + res.status + ' after ' + (Date.now() - t0) + 'ms' });
+      }
+      // An expired session must LOOK expired. The gate 401s every /api call
+      // once the cookie is gone (a deploy restart is enough) while the app
+      // shell stays loaded, so the page looks alive but mute. Seen on a sister
+      // deployment and reported as "she's dead, she don't talk" -- the real
+      // state was logged out. Reload so the gate serves the sign-in form.
+      // /api/login and /api/unlock excluded: a wrong password legitimately
+      // 401s and must show its message.
+      if (res.status === 401 && path.indexOf('/api/') === 0
+          && path !== '/api/login' && path !== '/api/unlock' && !_sessionGone) {
+        _sessionGone = true;   // one reload, never a loop
+        location.reload();
       }
       return res;
     }, (err) => {
