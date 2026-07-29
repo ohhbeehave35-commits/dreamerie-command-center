@@ -1487,7 +1487,17 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
     # cache in place, so this instance still counts accurately.
     threading.Thread(target=crm.increment_chat_count, args=(persona,), daemon=True).start()
 
-    messages = list(history) + [{"role": "user", "content": _build_user_content(user_message, file)}]
+    # Keep ONLY role+content on the way to the API. History round-trips through
+    # the browser, and get_history() adds a "speaker" field for the UI badge --
+    # Anthropic 400s on any extra key ("messages.0.speaker: Extra inputs are
+    # not permitted"), which surfaced as a 500 on EVERY message in any
+    # conversation reloaded after sign-in. Whitelisting here (not blacklisting
+    # "speaker") means the next UI-only field can't re-create the bug.
+    messages = [
+        {"role": m.get("role") if m.get("role") in ("user", "assistant") else "user",
+         "content": m.get("content", "")}
+        for m in history if m.get("content")
+    ] + [{"role": "user", "content": _build_user_content(user_message, file)}]
     delegated_to: List[str] = []
     artifact_url: Optional[str] = None
     artifact_title: Optional[str] = None
