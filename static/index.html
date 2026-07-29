@@ -2609,9 +2609,23 @@
     if (p) { p.style.display = 'block'; if (p === panelFlow) renderFlow(); if (p === panelHistory) renderHistory(); if (p === panelResults) renderResults(); if (p === panelSettings) renderSettings(); if (p === panelChats) loadChats(); if (p === panelPending) loadPending(); if (p === panelSchedule) renderSchedule(); if (p === panelToolbox) renderToolbox(); if (p === panelContent) renderContent(); }
   };
   navCommand.addEventListener('click', (e) => { e.preventDefault(); showPanel(null); });
-  navAgents.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelAgents.style.display === 'block' ? null : panelAgents); });
-  navTasks.addEventListener('click', (e) => { e.preventDefault(); showPanel(panelTasks.style.display === 'block' ? null : panelTasks); });
-  document.getElementById('navToolbox').addEventListener('click', (e) => { e.preventDefault(); showPanel(panelToolbox.style.display === 'block' ? null : panelToolbox); });
+  // EVERY menu item that opens a panel gets wired here, data-driven. This
+  // used to be a hand-written list that a menu restructure truncated to five
+  // entries -- Settings, History, Results, Chats, Flow, Pending, Schedule,
+  // Artifacts and SEO were left as href="#" links with NO handler, so
+  // clicking them did nothing at all: no panel, no error, no console line.
+  // "Settings is not responding" (Susan, 28 Jul) was this.
+  [
+    ['navFlow', panelFlow], ['navAgents', panelAgents], ['navTasks', panelTasks],
+    ['navToolbox', panelToolbox], ['navPending', panelPending], ['navSchedule', panelSchedule],
+    ['navContent', panelContent], ['navArtifacts', panelArtifacts], ['navHistory', panelHistory],
+    ['navResults', panelResults], ['navChats', panelChats], ['navSEO', panelSEO],
+    ['navSettings', panelSettings],
+  ].forEach(([id, panel]) => {
+    const el = document.getElementById(id);
+    if (!el || !panel) { console.warn('nav wiring skipped:', id); return; }
+    el.addEventListener('click', (e) => { e.preventDefault(); showPanel(panel.style.display === 'block' ? null : panel); });
+  });
 
   // ---- Skill Toolbox: capability cards + tap-to-ask example phrases ----
   let toolboxLoaded = false;
@@ -2659,7 +2673,8 @@
     }
   }
 
-  document.getElementById('navContent').addEventListener('click', (e) => { e.preventDefault(); showPanel(panelContent.style.display === 'block' ? null : panelContent); });
+  // navContent is wired in the data-driven list above -- a second handler
+  // here would toggle the panel twice per click (open+close = nothing).
   logoutBtn.addEventListener('click', (e) => { e.preventDefault(); fetch('/api/logout', {method:'POST'}).then(() => location.replace('/static/index.html')); });
   document.getElementById('artifactToastClose').addEventListener('click', () => { document.getElementById('artifactToast').style.display = 'none'; });
   // ── Content Creation panel ─────────────────────────────────────────────────
