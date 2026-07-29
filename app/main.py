@@ -3406,7 +3406,8 @@ def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
     ok, reason = users.validate_password(req.password)
     if not ok:
         return JSONResponse({"ok": False, "detail": reason}, status_code=400)
-    if users.add_user(req.username, req.email, req.password, req.role):
+    created, why = users.add_user(req.username, req.email, req.password, req.role)
+    if created:
         # Set default user preferences
         if crm.is_configured():
             try:
@@ -3416,7 +3417,7 @@ def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
             except Exception as e:
                 log.warning(f"Could not set defaults for new user {req.username}: {e}")
         return JSONResponse({"ok": True, "detail": "User created"})
-    return JSONResponse({"ok": False, "detail": "User already exists or error creating user"}, status_code=400)
+    return JSONResponse({"ok": False, "detail": why or "Could not create the user."}, status_code=400)
 
 
 @app.delete("/api/users/{username}")
@@ -3780,9 +3781,9 @@ def setup_first_user(req: LoginRequest) -> JSONResponse:
         return JSONResponse({"ok": False, "detail": "Setup already complete. Use /api/login."}, status_code=403)
     if not req.username or not req.password:
         return JSONResponse({"ok": False, "detail": "Username and password required"}, status_code=400)
-    ok = users.add_user(req.username, "admin@dreamerie.com", req.password, role="owner")
+    ok, why = users.add_user(req.username, "admin@dreamerie.com", req.password, role="owner")
     if not ok:
-        return JSONResponse({"ok": False, "detail": "Failed to create user"}, status_code=500)
+        return JSONResponse({"ok": False, "detail": why or "Failed to create user"}, status_code=500)
     token = users.create_session_token(req.username)
     resp = JSONResponse({"ok": True, "detail": f"Account created for {req.username}. You are now logged in."})
     resp.set_cookie("cc_session", token, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)

@@ -112,6 +112,17 @@ def _ensure_users_table() -> str:
         for t in r.json().get("tables", []):
             if t.get("name", "").lower() == USERS_TABLE.lower():
                 _users_table_id_cache = t["id"]
+                # The Users table was the ONLY table in this app that skipped
+                # the field migration every other table does. Airtable 422s a
+                # record-create naming a column that doesn't exist -- it does
+                # not add columns for you -- so a Users table created by an
+                # older deploy makes every add_user() fail forever.
+                crm._ensure_field(c, t["id"], t, "Username", "singleLineText")
+                crm._ensure_field(c, t["id"], t, "Email", "email")
+                crm._ensure_field(c, t["id"], t, "PasswordHash", "singleLineText")
+                crm._ensure_field(c, t["id"], t, "Role", "singleSelect")
+                crm._ensure_field(c, t["id"], t, "CreatedAt", "singleLineText")
+                crm._ensure_field(c, t["id"], t, "LastLogin", "singleLineText")
                 return _users_table_id_cache
         # Create Users table
         fields = [
@@ -193,14 +204,21 @@ def get_user(username: str) -> Optional[dict]:
         return None
 
 
-def add_user(username: str, email: str, password: str, role: str = "owner") -> bool:
-    """Create a new user. Returns True on success."""
+def add_user(username: str, email: str, password: str, role: str = "owner") -> tuple:
+    """Create a new user. Returns (ok: bool, reason: str).
+
+    Returns the REAL reason on failure. This used to return a bare False and
+    print the exception, so the caller could only ever say "user already
+    exists or error creating user" -- one message covering a name collision,
+    an Airtable outage, a missing column and a bad token alike. Susan hit that
+    wall trying to create Nick's login and neither of them could see why.
+    """
     if not crm.is_configured():
-        return False
+        return False, "The user store isn't connected (Airtable isn't configured), so nothing was saved."
     try:
         # Check if user exists
         if get_user(username):
-            return False  # User already exists
+            return False, f"A user named {username!r} already exists."
         tid = _ensure_users_table()
         hashed = hash_password(password)
         with httpx.Client(timeout=30) as c:
@@ -216,11 +234,14 @@ def add_user(username: str, email: str, password: str, role: str = "owner") -> b
                            },
                            "typecast": True
                        })
-            r.raise_for_status()
-        return True
+            if r.status_code >= 400:
+                body = (r.text or "")[:300]
+                print(f"ADD_USER_FAIL user={username} http={r.status_code} body={body}")
+                return False, f"The user store rejected it (HTTP {r.status_code}): {body}"
+        return True, ""
     except Exception as e:
-        print(f"Error adding user {username}: {e}")
-        return False
+        print(f"ADD_USER_FAIL user={username} exception={type(e).__name__}: {e}")
+        return False, f"Couldn't reach the user store ({type(e).__name__}: {e}). Nothing was saved."
 
 
 def update_user_password(username: str, new_password: str) -> bool:
