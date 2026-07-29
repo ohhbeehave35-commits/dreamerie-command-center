@@ -56,13 +56,19 @@ def _ensure_assets_table() -> str:
         return _assets_table_id_cache
 
 
-def add_asset(name: str, url: str, media_type: str = "Photo", tags: str = "", notes: str = "") -> str:
-    """Register one asset (a link to a photo/video hosted elsewhere) under a
-    memorable name. Returns a confirmation or explanation -- never raises."""
+def add_asset_checked(name: str, url: str, media_type: str = "Photo",
+                      tags: str = "", notes: str = "") -> tuple:
+    """Register one asset. Returns (ok: bool, message: str).
+
+    The string-only add_asset() below can't be checked by a caller -- every
+    outcome is prose, so "saved" and "Airtable rejected it" are the same type.
+    Anything that needs to KNOW whether the write landed (the owner-side
+    /api/assets POST) calls this instead. Never raises.
+    """
     if not crm.is_configured():
-        return "The asset library isn't available (Airtable not connected)."
+        return False, "The asset library isn't available (Airtable not connected)."
     if not name.strip() or not url.strip():
-        return "I need both a name and a URL to save an asset."
+        return False, "I need both a name and a URL to save an asset."
     media_type = (media_type or "Photo").strip().title()
     if media_type not in MEDIA_TYPES:
         media_type = "Other"
@@ -77,10 +83,23 @@ def add_asset(name: str, url: str, media_type: str = "Photo", tags: str = "", no
                            "Tags": tags.strip()[:500],
                            "Notes": notes.strip()[:2000],
                        }, "typecast": True})
-            r.raise_for_status()
-        return f"Saved \"{name.strip()}\" ({media_type}) to the asset library."
+            if r.status_code >= 400:
+                body = (r.text or "")[:300]
+                return False, f"The asset store rejected it (HTTP {r.status_code}): {body}"
+        return True, f"Saved \"{name.strip()}\" ({media_type}) to the asset library."
     except Exception as e:
-        return f"Couldn't save that asset: {type(e).__name__}: {e}"
+        return False, f"Couldn't save that asset: {type(e).__name__}: {e}"
+
+
+def add_asset(name: str, url: str, media_type: str = "Photo", tags: str = "", notes: str = "") -> str:
+    """Register one asset (a link to a photo/video hosted elsewhere) under a
+    memorable name. Returns a confirmation or explanation -- never raises.
+
+    Kept string-returning for the eight existing callers (the save_asset tool,
+    the Dropbox/Drive importers, the image/video generators), some of which
+    pattern-match the text. New code should call add_asset_checked().
+    """
+    return add_asset_checked(name, url, media_type, tags, notes)[1]
 
 
 def list_assets_raw(limit: int = 20, media_type: str = "") -> list:

@@ -3952,6 +3952,47 @@ def get_assets_list(limit: int = 30, media_type: str = "") -> JSONResponse:
     return JSONResponse({"assets": assets.list_assets_raw(limit=limit, media_type=media_type)})
 
 
+class AssetIn(BaseModel):
+    name: str = ""
+    url: str = ""
+    media_type: str = "Photo"
+    tags: str = ""
+    notes: str = ""
+
+
+class AssetsPushRequest(BaseModel):
+    assets: List[AssetIn] = []
+
+
+@app.post("/api/assets")
+def push_assets(req: AssetsPushRequest, request: Request) -> JSONResponse:
+    """Owner-only. Write assets straight into the library.
+
+    Asking Annabelle in chat to "save these assets" is a REQUEST -- she may
+    answer directly without ever calling save_asset, and the library stays
+    empty while the transcript looks like it worked. This writes them, and
+    reports per-asset what actually happened, so loading a client packet is a
+    verifiable operation instead of a hopeful one.
+    """
+    if not _is_owner_request(request):
+        return JSONResponse({"ok": False, "detail": "Owner access required"}, status_code=403)
+    if not req.assets:
+        return JSONResponse({"ok": False, "detail": "No assets given."}, status_code=400)
+    results = []
+    for a in req.assets:
+        ok, msg = assets.add_asset_checked(a.name, a.url, a.media_type, a.tags, a.notes)
+        results.append({"name": a.name, "ok": ok, "detail": msg})
+        if not ok:
+            support.record_note("asset_push_failed", f"{a.name}: {msg}", path="/api/assets")
+    saved = sum(1 for r in results if r["ok"])
+    # ok is True only when EVERY asset landed -- a partial write reported as
+    # success is how a half-loaded packet looks finished.
+    return JSONResponse(
+        {"ok": saved == len(results), "saved": saved, "total": len(results), "results": results},
+        status_code=200 if saved == len(results) else 207,
+    )
+
+
 @app.get("/api/diagnostic")
 def api_diagnostic() -> JSONResponse:
     """Owner-only. Deep probe of every integration — actually pings Stripe,
