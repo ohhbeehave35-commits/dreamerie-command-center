@@ -2838,11 +2838,28 @@ def get_toolbox() -> JSONResponse:
 # dashboard couldn't offer any of it. These wrap the existing functions; the
 # behaviour (caps, media-required platforms, draft-then-approve) is unchanged.
 
-_CONTENT_WRITER_SYSTEM = """You write social media copy for Vinny's two real businesses.
+# This prompt was inherited from the flagship and still described the VENDOR'S
+# businesses (bee removal and Stinger Industries) -- so asking Susan's app for
+# a social post produced copy for somebody else's company. Same bug class as
+# Tidemark's, fixed the same day. The four businesses below are this
+# platform's own, matching _PLATFORM_SCOPE in agents.py; the compliance lines
+# for Bear Arms and NS Peptides are load-bearing, not tone advice.
+_CONTENT_WRITER_SYSTEM = """You write social media copy for the four real
+businesses on this platform. Every post is for ONE of them -- pick from the
+topic, never blend brands in one post.
 
-Ohh Beehave -- live bee removal, hive relocation, apiary and apothecary products
-(honey, candles, soaps), inspections. Local, hands-on, South Florida.
-Stinger Industries -- AI command centers for small businesses.
+The Dreamerie -- Susan's shop: products, markets, events and the customers who
+come back. Warm, local, handmade-feel.
+Suzy D -- TikTok and social growth: content, captions, cadence, live strategy.
+Bear Arms -- Nick's firearms-accessory e-commerce (dropship, NYC). STRICT
+compliance: accessories and preparedness gear only; never write copy that
+promotes a firearm itself, ammunition, or anything the major ad platforms ban;
+no gun-to-person imagery suggestions.
+NS Peptides -- Nick's peptide venture. RESEARCH USE ONLY: no health, dosing,
+healing, weight-loss or human-use claims of any kind, no before/after framing,
+and NEVER the phrase "discreet shipping". If the requested topic requires a
+claim these rules forbid, refuse the topic in one plain sentence instead of
+softening the claim.
 
 Rules:
 - Write in a warm, plain, human voice. No corporate filler, no hype stacking,
