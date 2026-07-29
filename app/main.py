@@ -1144,6 +1144,7 @@ def get_current_user(request: Request) -> JSONResponse:
         "role": user["role"],
         "created_at": user["created_at"],
         "last_login": user["last_login"],
+        "is_superadmin": _is_superadmin(request),
     })
 
 
@@ -3438,6 +3439,17 @@ def _get_session_role(request: Request) -> Optional[str]:
     return user.get("role") if user else None
 
 
+def _is_superadmin(request: Request) -> bool:
+    """True only for the single operator account that may reset the deployment.
+    Identified by SUPERADMIN_USERNAME (defaults to the bootstrap 'owner'). An
+    access-code session with no username is never super-admin."""
+    username = _authed_username(request)
+    if not username:
+        return False
+    superadmin = os.environ.get("SUPERADMIN_USERNAME", "owner").strip()
+    return username == superadmin
+
+
 def _is_owner_request(request: Request) -> bool:
     """Owner check that works on BOTH auth systems.
 
@@ -3586,6 +3598,28 @@ def change_password(req: ChangePasswordRequest, request: Request) -> JSONRespons
     crm.set_setting("owner_password_changed", "true")
 
     return JSONResponse({"ok": True, "detail": "Password changed"})
+
+
+class ResetMemoryRequest(BaseModel):
+    confirm: str = ""  # must equal "RESET" -- guards against a stray click
+
+
+@app.post("/api/reset-memory")
+def reset_memory(req: ResetMemoryRequest, request: Request) -> JSONResponse:
+    """Super-admin only. Wipe all customer data + client identity for a fresh
+    handoff (run after Q.C.). Secrets and user accounts are preserved. Requires
+    an exact "RESET" confirmation in the body."""
+    if not _is_superadmin(request):
+        return JSONResponse({"ok": False, "detail": "Super-admin access required"}, status_code=403)
+    if (req.confirm or "").strip() != "RESET":
+        return JSONResponse(
+            {"ok": False, "detail": 'Confirmation failed -- type RESET to proceed.'},
+            status_code=400)
+    summary = crm.reset_customer_data()
+    who = _authed_username(request) or "?"
+    print(f"[RESET] Customer data reset by super-admin '{who}': {summary}")
+    status = 200 if summary.get("ok") else 500
+    return JSONResponse(summary, status_code=status)
 
 
 # Louden Bonded Pools KPI dashboard (owner only, behind access gate)

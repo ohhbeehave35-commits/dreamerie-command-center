@@ -15,6 +15,7 @@ instead of crashing.
 import os
 import logging
 import threading
+from typing import Optional
 from datetime import datetime, timezone
 
 import httpx
@@ -1319,3 +1320,96 @@ def list_leads(business="", status="", search="", limit=10) -> str:
         return "Here are the leads:\n" + "\n".join(lines)
     except Exception as e:
         return f"I couldn't read the CRM: {type(e).__name__}. Please try again."
+
+
+# ---------------------------------------------------------------------------
+# Reset for a new customer (super-admin only; called after Q.C. sign-off).
+#
+# Wipes CUSTOMER-DATA tables + client identity so the next client starts clean.
+# Deliberately does NOT touch Settings secrets or Users (wiping either could
+# break the deployment or lock the operator out). Best-effort per table -- an
+# absent table is skipped, an errored one is logged, the rest still run.
+# ---------------------------------------------------------------------------
+
+_CUSTOMER_DATA_TABLES = [
+    TABLE_NAME,            # Leads
+    CONV_TABLE,            # Conversations
+    CHAT_SESSIONS_TABLE,   # ChatSessions
+    BUILD_TABLE,           # Build Requests
+    SKILLS_TABLE,          # Skills Log
+    ARTIFACTS_TABLE,       # Artifacts
+    PUSH_TABLE,            # PushSubscriptions
+    STRATEGY_TABLE,        # Client Strategies
+    DEV_AGENT_LOG_TABLE,   # Dev Agent Log
+    VERIFICATION_TABLE,    # Verification Log
+]
+
+_IDENTITY_SETTING_KEYS = [
+    "assistant_name",
+    "brand_accent",
+    "brand_logo_url",
+    "owner_password_changed",
+]
+
+
+def _table_id_by_name(c: "httpx.Client", name: str) -> Optional[str]:
+    """Resolve a table id by name via the meta API. None if the base has no
+    such table (which is fine -- nothing to wipe)."""
+    r = c.get(f"{_API}/v0/meta/bases/{AIRTABLE_BASE_ID}/tables", headers=_headers())
+    r.raise_for_status()
+    for t in r.json().get("tables", []):
+        if t.get("name", "").lower() == name.lower():
+            return t["id"]
+    return None
+
+
+def _delete_all_in_table(c: "httpx.Client", table_id: str) -> int:
+    """Delete every record in a table, 10 ids per request (Airtable's cap)."""
+    deleted = 0
+    while True:
+        r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{table_id}",
+                  headers=_headers(), params={"pageSize": "100", "fields[]": []})
+        r.raise_for_status()
+        ids = [rec["id"] for rec in r.json().get("records", [])]
+        if not ids:
+            break
+        for i in range(0, len(ids), 10):
+            batch = ids[i:i + 10]
+            dr = c.delete(f"{_API}/v0/{AIRTABLE_BASE_ID}/{table_id}",
+                          headers=_headers(),
+                          params=[("records[]", rid) for rid in batch])
+            dr.raise_for_status()
+            deleted += len(batch)
+    return deleted
+
+
+def reset_customer_data() -> dict:
+    """Clear all customer data + client identity for a fresh handoff. Best-effort;
+    returns a per-table summary with any errors."""
+    if not is_configured():
+        return {"ok": False, "detail": "Airtable not configured", "wiped": {}}
+    wiped: dict = {}
+    errors: dict = {}
+    with httpx.Client(timeout=60) as c:
+        for name in _CUSTOMER_DATA_TABLES:
+            try:
+                tid = _table_id_by_name(c, name)
+                if not tid:
+                    continue
+                wiped[name] = _delete_all_in_table(c, tid)
+            except Exception as e:
+                errors[name] = f"{type(e).__name__}: {e}"
+    cleared = []
+    for key in _IDENTITY_SETTING_KEYS:
+        try:
+            set_setting(key, "")
+            cleared.append(key)
+        except Exception as e:
+            errors[f"setting:{key}"] = f"{type(e).__name__}: {e}"
+    try:
+        global _settings_cache, _settings_cache_at
+        _settings_cache = {}
+        _settings_cache_at = 0
+    except Exception:
+        pass
+    return {"ok": not errors, "wiped": wiped, "identity_cleared": cleared, "errors": errors}

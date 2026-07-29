@@ -803,6 +803,14 @@
       <span id="exportMsg" style="font-size:12px;color:#8fb08f;margin-left:10px"></span>
     </div>
 
+    <!-- Danger zone: super-admin only. Hidden unless /api/me returns is_superadmin. -->
+    <div id="resetSection" style="display:none;border:1px solid rgba(200,70,70,0.5);border-radius:12px;padding:16px 18px;margin-bottom:14px;background:rgba(40,12,12,0.35)">
+      <div style="font-weight:600;font-size:13.5px;margin-bottom:10px;color:#e88">Reset for New Customer</div>
+      <div style="font-size:11.5px;color:#c99;margin-bottom:12px;line-height:1.5">Operator only. After Q.C. sign-off, this <b>permanently deletes</b> all leads, conversations, assets, notes and build requests, and clears the assistant's name, brand colour and logo — so the next customer starts clean. Integration secrets and login accounts are kept. <b>Export first if you want a backup.</b></div>
+      <button id="resetBtn" style="padding:9px 18px;font-weight:600;font-size:13px;background:linear-gradient(180deg,#d05555,#a63030);color:#fff;border:none;border-radius:8px;cursor:pointer">Reset for New Customer</button>
+      <span id="resetMsg" style="font-size:12px;color:#c99;margin-left:10px"></span>
+    </div>
+
     <div style="border:1px solid rgba(var(--brand-rgb),0.2);border-radius:12px;padding:16px 18px;margin-bottom:14px">
       <div style="font-weight:600;font-size:13.5px;margin-bottom:12px">Users &amp; Accounts</div>
 
@@ -3271,6 +3279,9 @@
       // Access-code deployment: no per-user account, but whoever holds the
       // code IS the owner -- show that instead of a dash that reads as broken.
       else if (me.access_mode) document.getElementById('currentUser').textContent = 'Access code (owner)';
+      // Reveal the reset danger zone only for the single operator account.
+      const rs = document.getElementById('resetSection');
+      if (rs) rs.style.display = me.is_superadmin ? 'block' : 'none';
     }).catch(() => {});
     fetch('/api/users').then(r => r.json()).then(d => {
       const list = document.getElementById('usersList');
@@ -3586,6 +3597,28 @@
       URL.revokeObjectURL(url);
       msg.textContent = 'Downloaded.';
     }).catch(() => { msg.textContent = 'Error.'; });
+  });
+
+  // Danger zone: wipe customer data for a fresh handoff. Two gates -- a typed
+  // confirmation here, and a super-admin + "RESET" body check on the server.
+  const _resetBtn = document.getElementById('resetBtn');
+  if (_resetBtn) _resetBtn.addEventListener('click', () => {
+    const msg = document.getElementById('resetMsg');
+    const typed = window.prompt('This permanently deletes ALL customer data and clears the assistant\'s name, brand and logo. This cannot be undone.\n\nType RESET (capitals) to confirm:');
+    if (typed === null) { msg.textContent = ''; return; }
+    if (typed.trim() !== 'RESET') { msg.textContent = 'Not confirmed — nothing was deleted.'; return; }
+    msg.textContent = 'Resetting…';
+    _resetBtn.disabled = true;
+    fetch('/api/reset-memory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'RESET' })
+    }).then(r => r.json().then(d => ({ ok: r.ok, d }))).then(({ ok, d }) => {
+      _resetBtn.disabled = false;
+      if (!ok || !d.ok) { msg.textContent = 'Failed: ' + (d.detail || JSON.stringify(d.errors || d)); return; }
+      const total = Object.values(d.wiped || {}).reduce((a, b) => a + b, 0);
+      msg.textContent = 'Done — ' + total + ' records cleared. Reloading…';
+      setTimeout(() => window.location.reload(), 1400);
+    }).catch(() => { _resetBtn.disabled = false; msg.textContent = 'Error contacting server.'; });
   });
 
   // Render the durable conversation history (pulled fresh from the server each open).
