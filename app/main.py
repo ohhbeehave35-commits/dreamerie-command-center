@@ -33,6 +33,8 @@ from anthropic import Anthropic
 from openai import OpenAI
 
 from . import crm
+from . import inbox
+from . import unbuilt
 from . import events
 from . import brand_identity
 from . import password_reset
@@ -490,6 +492,7 @@ async def access_gate(request: Request, call_next):
             "/api/proposals/sign",  # proposal viewer accessed by clients, not owners
             "/proposal",  # client-facing proposal viewer
             "/healthz",  # uptime monitor probe -- must never require auth
+            "/api/inbox",  # machine-to-machine push from Stinger -- protected by X-Inbox-Secret, not a session
             # The browser's error beacon. Ungated ON PURPOSE: the failure we
             # most needed to see -- "I can't get in" -- happens on a page that
             # by definition has no valid cookie, so a gated beacon would be
@@ -2333,7 +2336,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 crm.log_verification(flag_question, "Escalated", source="Annabelle self-flagged", detail=flag_reason)
                 answer = "Flagged for the team to review and follow up on -- no answer given until it's confirmed."
             elif agent_key is None:
-                answer = f"Unknown tool: {block.name}"
+                answer = unbuilt.refuse(block.name)
             else:
                 delegated_to.append(SUB_AGENTS[agent_key]["name"])
                 # Read every argument name the delegation tools actually
@@ -2765,6 +2768,43 @@ def healthz() -> JSONResponse:
         "ts": datetime.now(timezone.utc).isoformat(),
         "rev": (os.environ.get("RENDER_GIT_COMMIT") or "unknown")[:12],
     })
+
+
+class InboxItem(BaseModel):
+    title: str = ""
+    body: str = ""
+    kind: str = "update"
+    url: str = ""
+    sender: str = "Stinger Industries"
+
+
+@app.post("/api/inbox")
+def receive_inbox_item(item: InboxItem, request: Request) -> JSONResponse:
+    """Receive something Stinger pushed into THIS deployment's assistant.
+
+    Authenticated by a shared secret (X-Inbox-Secret), NOT the access code -- a
+    machine-to-machine push shouldn't need a human credential, and rotating the
+    access code shouldn't silently break the feed. Exempt from the browser gate
+    but enforces its own secret; a deployment that never set CLIENT_INBOX_SECRET
+    refuses everything rather than defaulting open.
+
+    Items land tagged with WHO sent them: an assistant quoting research it can't
+    attribute is the fabrication problem wearing a different hat.
+    """
+    if not inbox.is_receiving():
+        return JSONResponse(
+            {"ok": False, "detail": "This deployment doesn't accept pushes "
+                                    "(CLIENT_INBOX_SECRET isn't set)."},
+            status_code=403)
+    if not inbox.verify_secret(request.headers.get("X-Inbox-Secret", "")):
+        log.warning("INBOX_REJECTED wrong or missing shared secret")
+        return JSONResponse({"ok": False, "detail": "Bad secret."}, status_code=401)
+    ok, msg = inbox.store(item.title, item.body, item.kind, item.url, item.sender)
+    if not ok:
+        log.error("INBOX_SAVE_FAIL %s", msg)
+        return JSONResponse({"ok": False, "detail": msg}, status_code=502)
+    log.info("INBOX_RECEIVED title=%s from=%s", item.title, item.sender)
+    return JSONResponse({"ok": True, "detail": msg})
 
 
 @app.post("/api/chats/create")
