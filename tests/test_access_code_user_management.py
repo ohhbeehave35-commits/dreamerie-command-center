@@ -144,6 +144,37 @@ def test_users_table_migrates_its_columns_on_an_existing_table(monkeypatch):
     u._users_table_id_cache = None
 
 
+def test_migration_failure_cannot_break_the_login_read_path(monkeypatch):
+    """_ensure_users_table is on the session/login read path, not just
+    add_user. A token that cannot write schema must degrade the migration,
+    never raise -- otherwise a form nobody is using locks everyone out.
+    """
+    import app.users as u
+    u._users_table_id_cache = None
+
+    class FakeResp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"tables": [{"id": "tblUsers", "name": "Users", "fields": []}]}
+
+    class FakeClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k): return FakeResp()
+
+    monkeypatch.setattr(u.crm, "is_configured", lambda: True)
+    monkeypatch.setattr(u.httpx, "Client", lambda **k: FakeClient())
+
+    def boom(*a, **k):
+        raise RuntimeError("403 Forbidden: token lacks schema.bases:write")
+    monkeypatch.setattr(u.crm, "_ensure_field", boom)
+
+    # must still return the table id rather than propagating the 403
+    assert u._ensure_users_table() == "tblUsers"
+    u._users_table_id_cache = None
+
+
 def test_user_management_still_locked_without_any_auth(gated):
     c = TestClient(app, base_url=HTTPS)  # no session, no access cookie
     # The gate middleware answers first -- 401, not the endpoint's 403.

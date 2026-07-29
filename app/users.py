@@ -117,12 +117,26 @@ def _ensure_users_table() -> str:
                 # record-create naming a column that doesn't exist -- it does
                 # not add columns for you -- so a Users table created by an
                 # older deploy makes every add_user() fail forever.
-                crm._ensure_field(c, t["id"], t, "Username", "singleLineText")
-                crm._ensure_field(c, t["id"], t, "Email", "email")
-                crm._ensure_field(c, t["id"], t, "PasswordHash", "singleLineText")
-                crm._ensure_field(c, t["id"], t, "Role", "singleSelect")
-                crm._ensure_field(c, t["id"], t, "CreatedAt", "singleLineText")
-                crm._ensure_field(c, t["id"], t, "LastLogin", "singleLineText")
+                #
+                # BEST-EFFORT ON PURPOSE. This function is on the LOGIN and
+                # session-lookup path (six call sites), not just add_user. If
+                # the token can't write schema, or Airtable rate-limits, that
+                # must NOT turn "read a user" into an exception -- that would
+                # lock everyone out to fix a form nobody is using right now.
+                # A skipped migration only degrades add_user, which now
+                # reports the real 422 anyway.
+                for _name, _type in (
+                    ("Username", "singleLineText"),
+                    ("Email", "email"),
+                    ("PasswordHash", "singleLineText"),
+                    ("Role", "singleSelect"),
+                    ("CreatedAt", "singleLineText"),
+                    ("LastLogin", "singleLineText"),
+                ):
+                    try:
+                        crm._ensure_field(c, t["id"], t, _name, _type)
+                    except Exception as e:
+                        print(f"USERS_TABLE_MIGRATE_SKIP field={_name} {type(e).__name__}: {e}")
                 return _users_table_id_cache
         # Create Users table
         fields = [
