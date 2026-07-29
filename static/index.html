@@ -2191,10 +2191,27 @@
     peptides:  '/static/mode-bg-peptides.png',
   };
   const DEFAULT_BG = '/static/logo.webp';
+
+  // The top-left logo follows the selected business tab, same rule as the
+  // watermark: a mode with its own art shows that mark, everything else falls
+  // back to the owner's custom logo (Settings) or the house logo. Add a file
+  // here as art arrives -- Suzy D has no art yet, so she falls back on purpose
+  // rather than borrowing another brand's mark.
+  const MODE_LOGO = {
+    bear_arms: '/static/mode-bg-bear_arms.png',
+    peptides:  '/static/mode-bg-peptides.png',
+  };
+  let brandLogoUrl = '';  // custom logo from Settings; applyBrand() fills this
+  function applyModeLogo() {
+    const logoT = document.getElementById('logoTopbar');
+    if (!logoT) return;
+    const src = MODE_LOGO[currentMode] || brandLogoUrl || DEFAULT_BG;
+    if (!logoT.src.endsWith(src)) logoT.src = src;
+  }
   function applyModeBackground() {
     const wm = document.getElementById('logoWatermark');
     if (!wm) return;
-    const src = MODE_BG[currentMode] || DEFAULT_BG;
+    const src = MODE_BG[currentMode] || brandLogoUrl || DEFAULT_BG;
     if (!wm.src.endsWith(src)) wm.src = src;
     // A branded mode gets a touch more presence so the switch is felt; the
     // house/combined view stays at the original whisper-faint level.
@@ -2209,6 +2226,7 @@
       btn.style.fontWeight = active ? '600' : '500';
     });
     applyModeBackground();
+    applyModeLogo();
   }
   // ---------- Per-mode website slot ----------
   // Each business tab carries its own site. Same website__<brand> settings keys
@@ -4113,11 +4131,12 @@
     root.style.setProperty('--brand-light', data.light   || _lightenHex(accent, 0.25));
     root.style.setProperty('--brand-dark',  data.dark    || _darkenHex(accent, 0.18));
     root.style.setProperty('--brand-rgb',   data.rgb     || _hexToRgbStr(accent));
-    const src = data.logo_url || '/static/logo.webp';
-    const logoT = document.getElementById('logoTopbar');
-    const logoW = document.getElementById('logoWatermark');
-    if (logoT) logoT.src = src;
-    if (logoW) logoW.src = src;
+    // Remember the custom logo, then let the MODE decide what actually shows
+    // top-left -- setting logoT.src directly here stomped the per-tab logo on
+    // every brand fetch. The watermark stays mode-driven for the same reason.
+    brandLogoUrl = data.logo_url || '';
+    applyModeLogo();
+    applyModeBackground();
   }
   function renderBrand() {
     const brandUrl = demoSlug ? '/api/demo-brand/' + demoSlug : '/api/brand';
