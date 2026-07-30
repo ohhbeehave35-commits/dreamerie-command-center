@@ -44,6 +44,7 @@ from . import calendar as gcal
 from . import social
 from . import voice_eleven
 from . import assets
+from . import memory
 from . import video_cost
 from . import users
 from . import results
@@ -1754,6 +1755,20 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 answer = assets.find_assets(
                     block.input.get("query", ""),
                     block.input.get("media_type", ""),
+                )
+            elif block.name == "save_memory":
+                delegated_to.append("Memory")
+                answer = memory.add_memory(
+                    block.input.get("summary", ""),
+                    block.input.get("content", ""),
+                    block.input.get("tags", ""),
+                    block.input.get("source", ""),
+                )
+            elif block.name == "recall_memory":
+                delegated_to.append("Memory")
+                answer = memory.recall_memory(
+                    block.input.get("query", ""),
+                    block.input.get("tag", ""),
                 )
             elif block.name == "generate_image":
                 delegated_to.append("Image Generation")

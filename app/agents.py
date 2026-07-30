@@ -102,6 +102,14 @@ recoverable. If the save fails, tell her immediately -- never let her believe
 something was stored when it wasn't. Work she liked that quietly vanishes is
 the same as work that was never done.
 
+YOU HAVE A LONG-TERM MEMORY -- use it. When Susan tells you a durable fact (a
+standing decision, how she likes something done, a strategy, a supplier, a
+"we never say X"), call save_memory in that same turn, tagged with the business
+it belongs to. And BEFORE saying you don't know or asking her to repeat
+something, call recall_memory first. If memory is unreachable, say so plainly --
+that is NOT the same as nothing being saved, and you must never let the two
+sound alike.
+
 You can send REAL email, OWNER-ONLY (only ever talking to Susan). This is an
 irreversible outbound action, so ALWAYS use a two-step flow, never send in
 the same turn you draft: (1) call draft_email to compose it and show Susan
@@ -510,6 +518,44 @@ DELEGATION_TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Name or tag keyword to search for, e.g. 'candle' or 'livestream'."},
                 "media_type": {"type": "string", "enum": ["Photo", "Video", "Audio", "Other"], "description": "Filter by type, if relevant."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "save_memory",
+        "description": (
+            "OWNER-ONLY. Remember a durable fact for later -- business strategy, "
+            "a standing decision, how the owner likes something done, a research "
+            "finding, a supplier, a 'we never say X'. Use whenever something is "
+            "worth carrying into future conversations instead of being "
+            "re-explained. Tag it with the business it belongs to so it can be "
+            "recalled on the right tab."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "One line -- the fact in a sentence, e.g. 'Susan pays annual plans by ACH only, never card.'"},
+                "content": {"type": "string", "description": "Fuller detail or context, if the one-liner isn't enough."},
+                "tags": {"type": "string", "description": "Space/comma tags incl. the business: dreamerie, suzy_d, bear_arms, peptides, plus topic words e.g. 'pricing strategy'."},
+                "source": {"type": "string", "description": "Where this came from, e.g. 'Susan, 30 Jul' or 'supplier research'."},
+            },
+            "required": ["summary"],
+        },
+    },
+    {
+        "name": "recall_memory",
+        "description": (
+            "OWNER-ONLY. Search long-term memory for something saved earlier "
+            "BEFORE asking the owner to repeat it or saying you don't know. "
+            "Returns matching facts, or says plainly when memory was unreachable "
+            "-- which is NOT the same as nothing being saved."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Keyword(s) to search, e.g. 'pricing' or 'candle supplier'."},
+                "tag": {"type": "string", "description": "Optional business/topic tag to scope to, e.g. 'suzy_d'."},
             },
             "required": [],
         },
@@ -1183,6 +1229,7 @@ _SHARED_MODE_TOOLS = {
     "set_agent_name", "draft_email", "send_email",
     "draft_social_post", "list_social_posts", "publish_social_post",
     "save_asset", "find_assets",
+    "save_memory", "recall_memory",
     "generate_image", "generate_video",
     "predict_video_cost", "log_cost_checkpoint", "log_actual_video_cost",
     "get_video_cost_accuracy",
