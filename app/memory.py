@@ -17,11 +17,25 @@ fact saved on one tab can be recalled scoped to that tab -- the same tag
 vocabulary the events tracker and asset library already use.
 """
 
+import logging
+
 import httpx
 
 from . import crm
 
+log = logging.getLogger(__name__)
+
 MEMORY_TABLE = "Agent Memory"
+
+# Single source of truth for the schema: BOTH the create branch and the
+# migration branch read this, so a new column can never exist in one and not
+# the other. Primary (first) field must be a plain text type in Airtable.
+_FIELDS = [
+    {"name": "Summary", "type": "singleLineText"},
+    {"name": "Content", "type": "multilineText"},
+    {"name": "Tags", "type": "singleLineText"},
+    {"name": "Source", "type": "singleLineText"},
+]
 
 _memory_table_id_cache = None
 
@@ -37,16 +51,20 @@ def _ensure_memory_table() -> str:
         for t in r.json().get("tables", []):
             if t.get("name", "").lower() == MEMORY_TABLE.lower():
                 _memory_table_id_cache = t["id"]
+                # Migrate from the same _FIELDS the create branch uses, so the
+                # two can never drift. Airtable 422s a write naming a column it
+                # doesn't have and will NOT add it, so an Agent Memory table
+                # from an older deploy would reject every new memory, silently.
+                # Best-effort: a migration failure must never break recall.
+                for _f in _FIELDS:
+                    try:
+                        crm._ensure_field(c, t["id"], t, _f["name"], _f["type"])
+                    except Exception as _e:
+                        log.warning("TABLE_MIGRATE_SKIP AgentMemory field=%s %s",
+                                    _f.get("name"), type(_e).__name__)
                 return _memory_table_id_cache
-        # Primary (first) field must be a plain text type in Airtable.
-        fields = [
-            {"name": "Summary", "type": "singleLineText"},
-            {"name": "Content", "type": "multilineText"},
-            {"name": "Tags", "type": "singleLineText"},
-            {"name": "Source", "type": "singleLineText"},
-        ]
         r = c.post(f"{crm._API}/v0/meta/bases/{crm.AIRTABLE_BASE_ID}/tables",
-                   headers=crm._headers(), json={"name": MEMORY_TABLE, "fields": fields})
+                   headers=crm._headers(), json={"name": MEMORY_TABLE, "fields": _FIELDS})
         r.raise_for_status()
         _memory_table_id_cache = r.json()["id"]
         return _memory_table_id_cache
