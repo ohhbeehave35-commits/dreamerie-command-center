@@ -65,7 +65,10 @@
   .navMenu a:hover { background:rgba(var(--brand-rgb),0.12); }
   .chat-size-btn { background:#141310;border:1px solid rgba(var(--brand-rgb),0.4);color:var(--brand-light,#e6cf88);border-radius:7px;width:26px;height:20px;font-size:10px;line-height:1;cursor:pointer;padding:0; }
   .chat-size-btn:hover { background:rgba(var(--brand-rgb),0.18); }
-  html, body { margin: 0; height: 100%; background: #030304; overflow: hidden; }
+  html { margin: 0; height: 100%; background: #030304; overflow: hidden; }
+  /* Zoom / oversized content must SCROLL, not clip. Was overflow:hidden on
+     body too, which trapped anything past the fold with no way to reach it. */
+  body { margin: 0; min-height: 100%; background: #030304; overflow-y: auto; overflow-x: hidden; }
   * { box-sizing: border-box; }
   a { color: var(--brand, #d4af37); }
   a:hover { color: var(--brand-light, #f4d47a); }
@@ -122,7 +125,7 @@
 </head>
 <body>
 
-<div id="stage" style="position:relative;width:100%;height:100%;box-sizing:border-box;display:grid;grid-template-rows:auto minmax(0,1fr);grid-template-columns:minmax(0,1180px) clamp(300px,24vw,420px);justify-content:center;gap:14px 18px;padding:10px 22px 18px;font-family:Inter,sans-serif;color:#e6e2d6;overflow:hidden;background:radial-gradient(ellipse at 50% 44%,#0d0d10,#030304 74%)">
+<div id="stage" style="position:relative;width:100%;min-height:100%;box-sizing:border-box;display:grid;grid-template-rows:auto minmax(0,1fr);grid-template-columns:minmax(0,1fr) clamp(300px,24vw,420px);justify-content:stretch;gap:14px 18px;padding:10px 22px 18px;font-family:Inter,sans-serif;color:#e6e2d6;overflow:visible;background:radial-gradient(ellipse at 50% 44%,#0d0d10,#030304 74%)">
 
   <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:0;opacity:0.06;mix-blend-mode:screen;pointer-events:none"><img id="logoWatermark" src="/static/logo.webp" style="width:69%;height:69%;object-fit:contain"></div>
 
