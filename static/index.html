@@ -2208,6 +2208,7 @@
   // switch to it, so the workspace visibly becomes that company. Modes without
   // their own art fall back to the house logo. Add a file here as art arrives.
   const MODE_BG = {
+    suzy_d:    '/static/mode-bg-suzy_d.png',
     bear_arms: '/static/mode-bg-bear_arms.png',
     peptides:  '/static/mode-bg-peptides.png',
   };
@@ -2216,9 +2217,10 @@
   // The top-left logo follows the selected business tab, same rule as the
   // watermark: a mode with its own art shows that mark, everything else falls
   // back to the owner's custom logo (Settings) or the house logo. Add a file
-  // here as art arrives -- Suzy D has no art yet, so she falls back on purpose
-  // rather than borrowing another brand's mark.
+  // here as art arrives. Dreamerie is the house brand -- it intentionally uses
+  // the default logo (logo.webp), so it needs no entry here.
   const MODE_LOGO = {
+    suzy_d:    '/static/mode-bg-suzy_d.png',
     bear_arms: '/static/mode-bg-bear_arms.png',
     peptides:  '/static/mode-bg-peptides.png',
   };
