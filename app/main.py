@@ -45,6 +45,7 @@ from . import social
 from . import voice_eleven
 from . import assets
 from . import memory
+from . import notes
 from . import video_cost
 from . import users
 from . import results
@@ -225,7 +226,7 @@ def get_tts_voice() -> str:
     return crm.get_setting("tts_voice_override", "") or TTS_VOICE
 
 
-AUTOMATION_LEVELS = ("manual", "semi_auto", "full_auto")
+AUTOMATION_LEVELS = ("manual", "semi_auto", "full_auto", "bypass")
 
 
 def get_automation_level() -> str:
@@ -1760,6 +1761,78 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                     block.input.get("query", ""),
                     block.input.get("media_type", ""),
                 )
+            elif block.name == "save_note":
+                delegated_to.append("Notes")
+                answer = notes.save_note(
+                    block.input.get("text", ""), block.input.get("title", ""),
+                    block.input.get("tags", ""), block.input.get("source", ""))
+            elif block.name == "find_notes":
+                delegated_to.append("Notes")
+                answer = notes.find_notes(block.input.get("query", ""))
+            elif block.name == "make_minutes":
+                delegated_to.append("Meeting Minutes")
+                _tr = (block.input.get("transcript") or "").strip()
+                if not _tr:
+                    # The honest failure: she has no ears. Saying so is the
+                    # whole point -- inventing a meeting would be worse than
+                    # admitting live transcription isn't wired up.
+                    answer = ("I don't have the transcript, and I can't hear a call --"
+                              " live transcription isn't connected yet. Paste the"
+                              " transcript or attach the recording's text and I'll"
+                              " build the minutes from what was actually said.")
+                else:
+                    _saved = notes.save_minutes(
+                        block.input.get("title", ""), _tr,
+                        block.input.get("attendees", ""))
+                    answer = ("Transcript received (" + str(len(_tr)) + " chars) and"
+                              " stored. " + _saved + " Now structure it into"
+                              " DECISIONS, ACTION ITEMS (owner + due date only if"
+                              " stated), OPEN QUESTIONS and NOT RESOLVED, using only"
+                              " what the transcript supports.")
+            elif block.name == "ask_critic":
+                # Not the generic ask_* path: that reads `query`/`briefing`,
+                # and the critic's contract is text + the evidence it is
+                # judged against. Assembling them explicitly also lets us
+                # state the no-evidence case honestly instead of passing "".
+                delegated_to.append("Critic")
+                _txt = (block.input.get("text") or "").strip()
+                _ev = (block.input.get("evidence") or "").strip()
+                if not _txt:
+                    answer = "Give me the draft or claim to check."
+                else:
+                    _q = ("CLAIM/DRAFT TO ATTACK:\n" + _txt + "\n\nEVIDENCE PROVIDED:\n"
+                          + (_ev if _ev else "(none was provided -- treat every "
+                             "load-bearing claim as UNSUPPORTED unless it is "
+                             "self-evidently true)"))
+                    answer = call_sub_agent("critic", _q, active_model)
+            elif block.name == "save_note":
+                delegated_to.append("Notes")
+                answer = notes.save_note(
+                    block.input.get("text", ""), block.input.get("title", ""),
+                    block.input.get("tags", ""), block.input.get("source", ""))
+            elif block.name == "find_notes":
+                delegated_to.append("Notes")
+                answer = notes.find_notes(block.input.get("query", ""))
+            elif block.name == "make_minutes":
+                delegated_to.append("Meeting Minutes")
+                _tr = (block.input.get("transcript") or "").strip()
+                if not _tr:
+                    # The honest failure: she has no ears. Saying so is the
+                    # whole point -- inventing a meeting would be worse than
+                    # admitting live transcription isn't wired up.
+                    answer = ("I don't have the transcript, and I can't hear a call --"
+                              " live transcription isn't connected yet. Paste the"
+                              " transcript or attach the recording's text and I'll"
+                              " build the minutes from what was actually said.")
+                else:
+                    _saved = notes.save_minutes(
+                        block.input.get("title", ""), _tr,
+                        block.input.get("attendees", ""))
+                    answer = ("Transcript received (" + str(len(_tr)) + " chars) and"
+                              " stored. " + _saved + " Now structure it into"
+                              " DECISIONS, ACTION ITEMS (owner + due date only if"
+                              " stated), OPEN QUESTIONS and NOT RESOLVED, using only"
+                              " what the transcript supports.")
             elif block.name == "save_memory":
                 delegated_to.append("Memory")
                 answer = memory.add_memory(
