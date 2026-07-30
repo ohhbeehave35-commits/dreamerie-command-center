@@ -1102,7 +1102,9 @@ DELEGATION_TOOLS += [
                 "plus question_id and the answer IMMEDIATELY after they answer, before asking "
                 "the next one -- an interview that saves at the end loses everything if it's "
                 "interrupted. Record the answer VERBATIM, in their words; do not tidy it up or "
-                "summarize it. action='status' reports what's captured and what's still missing.\n"
+                "summarize it. "
+                "NEVER write 'saved', 'locked in', 'got it, recorded' or any equivalent unless you are echoing a record call that ALREADY RETURNED in this turn -- saying it before the tool returns is a lie to someone who believes their answers are being kept, and this interview exists precisely to be trustworthy. Ask the NEXT question only from a tool result, never from memory. FIRST establish the edition: an ESTABLISHED business already has customers and revenue history, a STARTUP does not -- ask which if it is not obvious, and pass edition on every call, because a startup gets different questions and getting it wrong asks a brand-new business what its best customers say. "
+                "action='status' reports what's captured and what's still missing.\n"
                 "action='recall' is the one to reach for BEFORE answering any question about the "
                 "business -- it returns what was ACTUALLY SAID, word for word, so you can quote "
                 "it instead of generating something plausible, and tells you which questions were "
@@ -1115,7 +1117,8 @@ DELEGATION_TOOLS += [
                     "action": {"type": "string", "enum": ["next", "record", "status", "recall", "build_persona"],
                                "description": "next = get the question to ask; record = save an answer; status = what's captured; recall = look up what was ACTUALLY SAID."},
                     "question": {"type": "string", "description": "For recall: what you want to know, e.g. 'pricing' or 'what they don't do'."},
-                    "client": {"type": "string", "description": "The business this interview is about."},
+                    "edition": {"type": "string", "enum": ["established", "startup"], "description": "ESTABLISHED = already has customers/revenue history. STARTUP = brand new, no customers yet. Defaults to established; ask if unsure, because it changes which questions apply."},
+                "client": {"type": "string", "description": "The business this interview is about."},
                     "question_id": {"type": "string", "description": "For record: which question was answered."},
                     "answer": {"type": "string", "description": "For record: the answer, VERBATIM."},
                 },

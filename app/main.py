@@ -1621,6 +1621,10 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 from . import onboarding as _ob
                 _act = (block.input.get("action") or "next").strip().lower()
                 _client = block.input.get("client", "")
+                # Without this the startup edition was unreachable: onboarding.py
+                # defaults every signature to "established", so the three
+                # startup-only questions could never be asked.
+                _edition = (block.input.get("edition") or "established").strip().lower()
                 if _act == "record":
                     _ok, _msg = _ob.record_answer(
                         _client, block.input.get("question_id", ""),
@@ -1628,7 +1632,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                     if not _ok:
                         answer = _msg
                     else:
-                        _nx = _ob.next_question(_client)
+                        _nx = _ob.next_question(_client, _edition)
                         answer = (
                             f"Saved that answer word for word.\n\n"
                             + (f"All {_nx.get('total')} questions are done for {_client}. "
@@ -1640,9 +1644,9 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                                + f")\n\nNext question [{_nx.get('id')}]:\n{_nx.get('question')}")
                         )
                 elif _act == "status":
-                    answer = _ob.readiness(_client)
+                    answer = _ob.readiness(_client, _edition)
                 elif _act == "build_persona":
-                    _ok, _text = _ob.build_persona(_client)
+                    _ok, _text = _ob.build_persona(_client, _edition)
                     if not _ok:
                         answer = _text
                     else:
@@ -1679,7 +1683,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                             "Ground Truth", source="client onboarding interview",
                             detail=(_r["found"][0]["answer"][:200] if _r["found"] else "no answer captured"))
                 else:
-                    _nx = _ob.next_question(_client)
+                    _nx = _ob.next_question(_client, _edition)
                     if _nx.get("error"):
                         answer = _nx["error"]
                     elif _nx.get("done"):
