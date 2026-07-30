@@ -2725,6 +2725,7 @@ def _owner_chat_setup(req: ChatRequest):
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request) -> ChatResponse:
     req.clean()
+    _persist_user_message(request, req)   # before the model runs: a stop must not lose it
     sys_prompt, tools = _owner_chat_setup(req)
     try:
         result = run_main_brain(req.message, req.history, sys_prompt, tools, enable_search=True,
@@ -2744,20 +2745,54 @@ def chat(req: ChatRequest, request: Request) -> ChatResponse:
     return result
 
 
+def _persist_user_message(request: Request, req: ChatRequest) -> None:
+    """Save the user's turn the moment it arrives -- NOT when the reply lands.
+
+    Vinny, 30 Jul 2026: "stopping shouldn't lose the link."
+
+    It did. Both chat endpoints skip persistence entirely when the reply is
+    STOPPED_REPLY, and _persist_turn saved the question and the answer together
+    in one call -- so pressing stop discarded the user's own message with the
+    half-written reply. He pasted a YouTube URL, stopped her mid-reply, then
+    asked about the link and was told "I don't see a link." True from the
+    server's side and indistinguishable from gaslighting from his. Worse than
+    links: anything said in an interrupted turn vanished -- a price, an
+    address, a decision -- with nothing anywhere saying so.
+
+    The question is now saved independently of whether the answer completes.
+    Tagged with the speaker the request arrived with: if set_speaker fires
+    later in the same turn the tag is the prior speaker, which is a far smaller
+    loss than the message itself.
+    """
+    if not (req.message or "").strip():
+        return
+    threading.Thread(
+        target=crm.save_turn,
+        args=("user", req.message, _scoped_chat_id(request, req.chat_id), req.speaker or ""),
+        daemon=True).start()
+
+
 def _persist_turn(request: Request, req: ChatRequest, result: ChatResponse) -> None:
-    """Background-save the exchange and sync the active speaker back to the
-    client. Same bookkeeping /api/chat has always done, lifted out so the
-    streaming endpoint does it identically."""
-    def _persist(user_msg: str, reply: str, chat_id: str, speaker: str) -> None:
-        crm.save_turn("user", user_msg, chat_id, speaker)
+    """Background-save the ASSISTANT half and sync the active speaker back to
+    the client. The user half is already saved by _persist_user_message the
+    moment the request arrived -- see the note there on why the two are no
+    longer written together."""
+    def _persist(reply: str, chat_id: str, speaker: str) -> None:
         crm.save_turn("assistant", reply, chat_id, speaker)
 
     scoped_chat_id = _scoped_chat_id(request, req.chat_id)
     effective_speaker = result.speaker_name if result.speaker_name is not None else req.speaker
     result.speaker_name = effective_speaker
     threading.Thread(target=_persist,
-                     args=(req.message, result.reply, scoped_chat_id, effective_speaker),
+                     args=(result.reply, scoped_chat_id, effective_speaker),
                      daemon=True).start()
+    # Learn this speaker's style from their tagged turn, off the hot path. Only
+    # a named speaker builds a profile; the owner's default (empty) is skipped
+    # inside the module. This is what makes detect_speaker_shift smarter over
+    # time -- the passive half of the set_speaker feature.
+    if effective_speaker:
+        threading.Thread(target=update_profile,
+                         args=(effective_speaker, req.message), daemon=True).start()
 
 
 @app.post("/api/chat/stream")
@@ -2776,6 +2811,7 @@ def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
       {"type":"error","message":...}
     """
     req.clean()
+    _persist_user_message(request, req)   # before the model runs: a stop must not lose it
     sys_prompt, tools = _owner_chat_setup(req)
 
     def event_source():
