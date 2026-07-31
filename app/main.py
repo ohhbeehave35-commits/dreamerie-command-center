@@ -372,7 +372,7 @@ def startup_init():
 # Leave it unset for local use (localhost stays open).
 ACCESS_CODE = os.environ.get("ACCESS_CODE", "")
 
-LOCK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+LOCK_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Dreamerie Command Center</title></head>
 <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 44%,#1a1224,#0a0710 74%);font-family:Inter,-apple-system,sans-serif">
@@ -3939,7 +3939,7 @@ def google_callback(request: Request) -> HTMLResponse:
         flow.fetch_token(code=code)
         gcal.store_token(flow.credentials.to_json())
         return HTMLResponse(
-            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<html lang='en'><body style='font-family:sans-serif;text-align:center;padding:60px'>"
             "<h2>Google Calendar connected!</h2>"
             "<p>You can close this tab and return to the Command Center.</p>"
             "</body></html>"
@@ -3985,7 +3985,7 @@ def drive_callback(request: Request) -> HTMLResponse:
         flow.fetch_token(code=code)
         files_gdrive.store_token(flow.credentials.to_json())
         return HTMLResponse(
-            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<html lang='en'><body style='font-family:sans-serif;text-align:center;padding:60px'>"
             "<h2>Google Drive connected!</h2>"
             "<p>You can close this tab and return to the Command Center.</p>"
             "</body></html>"
@@ -4017,7 +4017,7 @@ def dropbox_callback(request: Request) -> HTMLResponse:
         payload = files_dropbox.exchange_code(code)
         files_dropbox.store_oauth_result(payload)
         return HTMLResponse(
-            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<html lang='en'><body style='font-family:sans-serif;text-align:center;padding:60px'>"
             "<h2>Dropbox connected!</h2>"
             "<p>You can close this tab and return to the Command Center.</p>"
             "</body></html>"
@@ -4103,7 +4103,7 @@ def lightspeed_callback(request: Request) -> HTMLResponse:
         ]
     )
     return HTMLResponse(
-        "<html><body style='font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 20px'>"
+        "<html lang='en'><body style='font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 20px'>"
         "<h2>Lightspeed connected!</h2>"
         "<p>Copy each value below into the matching Render environment variable, "
         "then click <b>Save, rebuild, and deploy</b>. Close this tab when done — "
@@ -4725,7 +4725,7 @@ def artifact_page(slug: str) -> HTMLResponse:
                                   protocols=["http", "https", "mailto", "data"], strip=True)
     except Exception:
         body_html = f"<pre>{_html.escape(raw)}</pre>"
-    page = f"""<!doctype html><html><head><meta charset="utf-8">
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} — The Dreamerie</title>
 <style>
