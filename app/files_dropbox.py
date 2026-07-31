@@ -38,10 +38,20 @@ log = logging.getLogger(__name__)
 # ── OAuth config ─────────────────────────────────────────────────────────────
 APP_KEY = os.environ.get("DROPBOX_APP_KEY", "")
 APP_SECRET = os.environ.get("DROPBOX_APP_SECRET", "")
-REDIRECT_URI = os.environ.get(
-    "DROPBOX_REDIRECT_URI",
-    "http://127.0.0.1:8040/dropbox/callback",
-)
+def _default_redirect(path: str) -> str:
+    """Production-safe default for an OAuth callback. A hard-coded
+    http://127.0.0.1:8040/... default is a silent dead end on a deployed app:
+    the provider redirects the browser to the USER'S OWN machine on a port
+    nothing listens on, the grant never completes, and the integration reports
+    "not configured" forever with no error anywhere. Derive from the deployed
+    site instead. (Ported from Stinger 3f4be89.)"""
+    base = os.environ.get("SITE_BASE_URL", "").rstrip("/")
+    if not base:
+        base = "https://dreamerie-command-center.onrender.com"
+    return f"{base}{path}"
+
+
+REDIRECT_URI = os.environ.get("DROPBOX_REDIRECT_URI") or _default_redirect("/dropbox/callback")
 
 DROPBOX_TOKEN_KEY = "dropbox_oauth_token"  # settings key for stored refresh info
 _STATIC_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN", "").strip()

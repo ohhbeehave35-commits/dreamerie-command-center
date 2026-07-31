@@ -23,10 +23,20 @@ from . import crm
 
 CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-REDIRECT_URI = os.environ.get(
-    "GOOGLE_DRIVE_REDIRECT_URI",
-    "http://127.0.0.1:8040/auth/drive-callback",
-)
+def _default_redirect(path: str) -> str:
+    """Production-safe default for an OAuth callback. A hard-coded
+    http://127.0.0.1:8040/... default is a silent dead end on a deployed app:
+    the provider redirects the browser to the USER'S OWN machine on a port
+    nothing listens on, the grant never completes, and the integration reports
+    "not configured" forever with no error anywhere. Derive from the deployed
+    site instead. (Ported from Stinger 3f4be89.)"""
+    base = os.environ.get("SITE_BASE_URL", "").rstrip("/")
+    if not base:
+        base = "https://dreamerie-command-center.onrender.com"
+    return f"{base}{path}"
+
+
+REDIRECT_URI = os.environ.get("GOOGLE_DRIVE_REDIRECT_URI") or _default_redirect("/auth/drive-callback")
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 DRIVE_TOKEN_KEY = "google_drive_oauth_token"

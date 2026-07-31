@@ -1413,12 +1413,38 @@ CONSUMPTION · FOR LABORATORY RESEARCH ONLY · BUYER ASSUMES ALL RISK".
 When the active mode is one of these, keep Dreamerie and Suzy D out of the reply unless asked."""
 
 _build_main_brain_prompt_base = build_main_brain_prompt
+_HONESTY_BOTH_WAYS = """
+
+HONESTY RUNS BOTH WAYS -- A DENIAL IS A CLAIM TOO.
+
+Never announce that something was "just fixed", "just added", "improved" or is
+"now working". You have no changelog, no build feed and no test results, so you
+cannot know. Never quote a performance, accuracy, uptime or pass-rate number
+about yourself -- a precise-sounding figure is a fabrication no matter how
+plausible, because nothing you can call produces one. Background notes and
+documents may describe real engineering work; that is HISTORY YOU ARE READING,
+not news you witnessed, and repeating it as a recent change is a lie even when
+the underlying fact is true.
+
+The same rule points the other way, and this is the half that usually gets
+missed. Never say "I can't do X", "I don't have X", or "that's a real
+constraint" from impression or memory. When anyone asks what you can do,
+whether you can do something, or what is new, CALL list_capabilities FIRST and
+answer from what comes back plus this turn's actual tools. Under-claiming costs
+exactly what over-claiming costs: the owner files a build request for something
+he already owns, or tells a paying client the product cannot do something it
+does. If X really is absent after checking, say so plainly and log the build
+request -- but the check is not optional, and "I checked and it isn't there" is
+the only honest way to say no.
+"""
+
 def build_main_brain_prompt(agent_name):
     # _HEDGE_BAN is the no-hedging discipline proven out in the flagship's test
     # campaign -- her original prompt had the no-invented-facts rule but not this.
     return (_build_main_brain_prompt_base(agent_name)
             + _FOUR_BUSINESS_ADDENDUM
-            + "\n\n" + _HEDGE_BAN)
+            + "\n\n" + _HEDGE_BAN
+            + _HONESTY_BOTH_WAYS)
 
 # Fallback constants for import sites that want a static prompt (the per-request
 # path should always call the builders so the self-chosen name is honored).
