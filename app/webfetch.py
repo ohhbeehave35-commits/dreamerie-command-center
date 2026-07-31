@@ -20,20 +20,20 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def safe_get(url: str, timeout: float = 12.0) -> Tuple[Optional[httpx.Response], Optional[str]]:
-    """Fetch `url` after confirming it doesn't resolve to a private/internal
-    address. Returns (response, None) on success or (None, human-readable
-    error) on failure -- callers report the error text directly rather than
-    raising, since a dead domain or bad cert is itself a finding worth
-    telling the user about."""
-    url = normalize_url(url)
-    host = urlparse(url).hostname or ""
+def is_public_host(host: str) -> Tuple[bool, str]:
+    """(ok, reason). THE private-address rule, in one place.
+
+    Factored out of safe_get so anything that reaches the network -- the plain
+    fetch, and now the live browser driver -- enforces the identical rule
+    instead of re-implementing it slightly differently. A second copy of an
+    SSRF check is a second chance to get it wrong.
+    """
     if not host:
-        return None, "That URL doesn't look valid -- give me a full address like https://example.com."
+        return False, "that URL doesn't look valid -- give me a full address like https://example.com"
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        return None, (
+        return False, (
             f"DNS FAILURE: {host} doesn't resolve at all right now. If this is a "
             "business's website, their site is effectively down -- that's worth reporting."
         )
@@ -43,7 +43,21 @@ def safe_get(url: str, timeout: float = 12.0) -> Tuple[Optional[httpx.Response],
         except ValueError:
             continue
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            return None, f"I can't fetch {host} -- it resolves to an internal address."
+            return False, f"I can't fetch {host} -- it resolves to an internal address."
+    return True, ""
+
+
+def safe_get(url: str, timeout: float = 12.0) -> Tuple[Optional[httpx.Response], Optional[str]]:
+    """Fetch `url` after confirming it doesn't resolve to a private/internal
+    address. Returns (response, None) on success or (None, human-readable
+    error) on failure -- callers report the error text directly rather than
+    raising, since a dead domain or bad cert is itself a finding worth
+    telling the user about."""
+    url = normalize_url(url)
+    host = urlparse(url).hostname or ""
+    ok, why = is_public_host(host)
+    if not ok:
+        return None, why[0].upper() + why[1:] if why and why[0].islower() else why
     try:
         resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=DEFAULT_HEADERS)
     except httpx.ConnectError as e:

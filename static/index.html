@@ -125,7 +125,11 @@
 </head>
 <body>
 
-<div id="stage" style="position:relative;width:100%;min-height:100vh;box-sizing:border-box;display:grid;grid-template-rows:auto minmax(0,1fr);grid-template-columns:minmax(0,1fr) clamp(300px,24vw,420px);justify-content:stretch;gap:14px 18px;padding:10px 22px 18px;font-family:Inter,sans-serif;color:#e6e2d6;overflow:visible;background:radial-gradient(ellipse at 50% 44%,#0d0d10,#030304 74%)">
+<!-- Three EXPLICIT rows + definite height. The media dock auto-placed into an
+     IMPLICIT row below the 100vh budget, so the page overflowed by the dock's
+     height and the composer's bottom slid under the fold. Under min-height the
+     1fr row also sized to CONTENT, not remaining space. Port of Stinger 8417752. -->
+<div id="stage" style="position:relative;width:100%;height:100vh;min-height:560px;box-sizing:border-box;display:grid;grid-template-rows:auto minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr) clamp(300px,24vw,420px);justify-content:stretch;gap:14px 18px;padding:10px 22px 18px;font-family:Inter,sans-serif;color:#e6e2d6;overflow:visible;background:radial-gradient(ellipse at 50% 44%,#0d0d10,#030304 74%)">
 
   <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:0;opacity:0.06;mix-blend-mode:screen;pointer-events:none"><img id="logoWatermark" src="/static/logo.webp" style="width:69%;height:69%;object-fit:contain"></div>
 
@@ -251,7 +255,9 @@
 
   <!-- LEFT COLUMN: the whole cell belongs to chat. Bottom-anchored so growing
        the transcript expands upward over the brain canvas, never off-screen. -->
-  <div id="colLeft" style="grid-row:2;grid-column:1;min-width:0;max-width:940px;width:100%;justify-self:center;display:flex;flex-direction:column;justify-content:flex-end;z-index:3">
+  <!-- min-height:0 lets this shrink below content so the TRANSCRIPT absorbs
+       short windows, not the composer. -->
+  <div id="colLeft" style="grid-row:2;grid-column:1;min-width:0;min-height:0;max-width:940px;width:100%;justify-self:center;display:flex;flex-direction:column;justify-content:flex-end;z-index:3">
 
   <div id="speakerBadge" style="display:none;justify-content:center;align-items:center;gap:8px;margin-bottom:10px;font-family:Inter,sans-serif;font-size:11px;color:var(--brand-light,#e6cf88)">
     <span id="speakerBadgeText"></span>
@@ -274,7 +280,7 @@
     <div id="liveCaption" style="display:none;margin-top:8px;font-size:13px;font-style:italic;color:#8fb0c4;background:rgba(12,11,9,0.7);border:1px dashed rgba(143,176,196,0.35);border-radius:9px;padding:6px 12px">
       <span style="font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#6f8a9a;font-style:normal;margin-right:8px">Hearing</span><span id="liveCaptionText"></span>
     </div>
-    <form id="chatForm" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+    <form id="chatForm" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;flex-shrink:0">
       <button type="button" id="micBtn" title="Hold a conversation by voice" style="font-family:Inter,sans-serif;font-size:14px;background:#141310;border:1px solid rgba(143,176,196,0.5);color:#8fb0c4;border-radius:8px;padding:5px 11px;cursor:pointer">&#127908;</button>
       <select id="micModeSelect" title="Speech input mode" style="font-family:Inter,sans-serif;font-size:11px;font-weight:600;background:#141310;border:1px solid rgba(143,176,196,0.5);color:#8fb0c4;border-radius:8px;padding:5px 3px;cursor:pointer;max-width:90px">
         <option value="manual">Speak to Text</option>
@@ -3554,6 +3560,7 @@
     mediaDockOpen = !mediaDockOpen;
     body.style.display = mediaDockOpen ? 'block' : 'none';
     document.getElementById('mediaDockToggle').innerHTML = mediaDockOpen ? '&#8964;' : '&#8963;';
+    applyDockSize();
   });
   document.getElementById('mediaDockRefresh').addEventListener('click', loadMediaDock);
   document.getElementById('mediaDockFilter').addEventListener('change', loadMediaDock);

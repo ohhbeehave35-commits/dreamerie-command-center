@@ -1146,6 +1146,44 @@ DELEGATION_TOOLS += [
             },
         },
     {
+            "name": "drive_browser",
+            "description": (
+                "OWNER-ONLY. Drive a REAL cloud browser through a short list of explicit "
+                "steps: open a page, click things by their visible text, type into fields, "
+                "then read what the page says afterward. This is the tool for pages that "
+                "need INTERACTION -- a quote form, a search box, content behind a button "
+                "click, a JS app scrape_page reads as empty. For plain reading, scrape_page "
+                "is cheaper and faster -- use it first. Steps are capped at 8 and each run "
+                "returns a session REPLAY LINK; always give the owner that link so they can "
+                "watch exactly what the browser did. HONESTY: this cannot log into the "
+                "owner's accounts (no passwords are stored for it), cannot solve CAPTCHAs, "
+                "and a step that can't find its target stops the run and says so -- report "
+                "exactly which step stopped, never pretend the rest ran. If it reports "
+                "'not connected', say the Browserbase key isn't set up yet."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Page to open first, e.g. https://example.com",
+                    },
+                    "steps": {
+                        "type": "array",
+                        "description": (
+                            "Up to 8 steps, each an object with 'do' = goto|click|type|"
+                            "press_enter|wait|read. click/type need 'target' (visible text "
+                            "or CSS selector); type needs 'text'; goto needs 'url'; wait "
+                            "takes 'seconds' (max 10). The page is always read at the end, "
+                            "so [] just opens and reads a JS-rendered page."
+                        ),
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    {
             "name": "list_capabilities",
             "description": (
                 "Show the Skill Toolbox -- what the assistant can do and what to say to "
@@ -1375,7 +1413,7 @@ _SHARED_MODE_TOOLS = {
     "generate_image", "generate_video",
     "predict_video_cost", "log_cost_checkpoint", "log_actual_video_cost",
     "get_video_cost_accuracy",
-    "run_diagnostic", "run_seo_audit", "ask_seo_auditor", "scrape_page",
+    "run_diagnostic", "run_seo_audit", "ask_seo_auditor", "scrape_page", "drive_browser",
     "list_capabilities", "flag_for_review", "log_skill_note", "set_speaker", "client_interview",
     "list_dropbox_folder", "search_dropbox", "save_dropbox_file",
     "list_drive_files", "search_drive", "save_drive_file",

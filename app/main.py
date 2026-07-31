@@ -2132,6 +2132,22 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                         "\n\nWant the full research card on any of these? Say "
                         '"research <company name>" and I\'ll run it and save them to the pipeline.'
                     )
+            elif block.name == "drive_browser":
+                delegated_to.append("Browser Drive")
+                from . import browser_drive
+                _ok, _res = browser_drive.drive(
+                    block.input.get("url", ""),
+                    block.input.get("steps") or [])
+                if not _ok:
+                    answer = f"BROWSER DRIVE FAILED: {_res}"
+                else:
+                    _notes = ("\nNOTES: " + "; ".join(_res["notes"])) if _res.get("notes") else ""
+                    answer = (
+                        f"BROWSER DRIVE RESULT (steps completed: {_res.get('steps_done', 0)})\n"
+                        f"FINAL PAGE: {_res.get('title', '')} -- {_res.get('url', '')}\n"
+                        f"SESSION REPLAY (give the owner this link): {_res.get('replay_url', '')}"
+                        f"{_notes}\n\nPAGE TEXT:\n{_res.get('text', '')}"
+                    )
             elif block.name == "scrape_page":
                 delegated_to.append("Page Scrape")
                 answer = scrape_page_text(block.input.get("url", ""))
