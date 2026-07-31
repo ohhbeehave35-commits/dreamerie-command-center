@@ -1450,6 +1450,25 @@ def _clear_cancelled(request_id: str) -> None:
 
 STOPPED_REPLY = "(stopped)"
 
+# How many model rounds one turn may use. Each round is a full-price model
+# call, so this is a spend bound -- but 4 starved real flows: recall_memory,
+# then save_memory, then the confirmation is already 3 rounds, and the 30 Jul
+# Stinger live QA sweep caught the cap eating the save while the narration
+# ("Saved --") shipped as the reply. 8 covers every legitimate chain seen so
+# far; only a pathological turn reaches it. (Ported from Stinger 3d4df60.)
+TOOL_ROUND_CAP = 8
+
+# Appended to the final tool_result batch when the cap is hit while the model
+# is still asking for tools. The wrap-up call this precedes carries NO tools,
+# so the only thing it can produce is a plain answer about what really ran.
+ROUND_CAP_WRAPUP_NOTE = (
+    "[SYSTEM: The tool-call limit for this turn is used up. Any tool call "
+    "you did not receive a tool_result for above DID NOT RUN -- including "
+    "any save or send you were about to make. Write your final reply now: "
+    "state plainly what actually completed and what did not, and never claim "
+    "an action happened without its tool_result above.]"
+)
+
 
 def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                    system_prompt: str = MAIN_BRAIN_SYSTEM_PROMPT,
@@ -1529,7 +1548,7 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
     spoken_so_far: List[str] = []
 
     # Loop to allow multiple rounds of tool use (e.g. two sub-agents needed).
-    for _ in range(4):
+    for _ in range(TOOL_ROUND_CAP):
         if _is_cancelled(request_id):
             yield {"type": "done", "response": ChatResponse(reply=STOPPED_REPLY, delegated_to=delegated_to,
                                  timings=timings, speaker_name=speaker_name)}
@@ -2597,9 +2616,38 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
         messages.append({"role": "user", "content": tool_results})
         timings["tools"] = round(timings["tools"] + (time.perf_counter() - _tt), 3)
 
+    # Ran out of tool rounds while the model was still asking for more. The
+    # old fall-through shipped the accumulated narration as the reply -- which
+    # is how a turn that narrated "Saved --" before a starved save shipped a
+    # straight-faced lie. Instead: one final TOOL-LESS call, told explicitly
+    # that un-run tools did not run. (Ported from Stinger 3d4df60.)
+    if not _is_cancelled(request_id):
+        # The loop always exits right after appending the tool_results user
+        # message, so ride the note in on that message rather than appending
+        # a second consecutive user turn.
+        messages[-1]["content"] = list(messages[-1]["content"]) + [
+            {"type": "text", "text": ROUND_CAP_WRAPUP_NOTE}]
+        try:
+            _tm = time.perf_counter()
+            with client.messages.stream(
+                model=active_model,
+                max_tokens=1024,
+                system=effective_system_prompt,
+                messages=messages,
+            ) as stream:
+                for delta in stream.text_stream:
+                    if _is_cancelled(request_id):
+                        break
+                    spoken_so_far.append(delta)
+                    yield {"type": "text", "text": delta}
+                stream.get_final_message()
+            timings["model"] = round(timings["model"] + (time.perf_counter() - _tm), 3)
+        except Exception as _wrap_exc:
+            # Best-effort: a failed wrap-up falls through to the narration /
+            # stuck fallback below rather than killing the turn.
+            log.warning("Round-cap wrap-up call failed: %s", _wrap_exc)
+
     timings["total"] = round(time.perf_counter() - _t0, 3)
-    # Ran out of tool rounds. If she narrated anything usable along the way,
-    # that's a better answer than the generic apology.
     stuck_text = "".join(spoken_so_far).strip() or (
         "Sorry, I got stuck coordinating that -- try rephrasing your question."
     )
@@ -2957,7 +3005,7 @@ def memory_health(request: Request, chat_id: str = "default") -> JSONResponse:
     return JSONResponse(stats)
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 def healthz() -> JSONResponse:
     """Tiny uptime probe. Public, no auth, no side effects. Returns 200 as
     long as the FastAPI worker is alive. UptimeRobot / any external monitor

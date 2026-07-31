@@ -251,7 +251,7 @@
 
   <!-- LEFT COLUMN: the whole cell belongs to chat. Bottom-anchored so growing
        the transcript expands upward over the brain canvas, never off-screen. -->
-  <div id="colLeft" style="grid-row:2;grid-column:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;z-index:3">
+  <div id="colLeft" style="grid-row:2;grid-column:1;min-width:0;max-width:940px;width:100%;justify-self:center;display:flex;flex-direction:column;justify-content:flex-end;z-index:3">
 
   <div id="speakerBadge" style="display:none;justify-content:center;align-items:center;gap:8px;margin-bottom:10px;font-family:Inter,sans-serif;font-size:11px;color:var(--brand-light,#e6cf88)">
     <span id="speakerBadgeText"></span>
@@ -1188,6 +1188,20 @@
   cv.style.cursor = 'grab';
   cv.addEventListener('pointerdown', onDownH);
   cv.addEventListener('wheel', onWheelH, { passive: false });
+
+  // The canvas sits under the whole UI, so its own wheel listener is
+  // unreachable and the brains read as frozen. Zoom when the wheel lands on
+  // the DEAD background only -- the stage itself or the empty stretch of a
+  // column box -- never on a child control or anything that scrolls.
+  const _stageEl = document.getElementById('stage');
+  const _deadZones = () => [
+    _stageEl, cv,
+    document.getElementById('colLeft'),
+    document.getElementById('colRight'),
+  ];
+  document.addEventListener('wheel', (e) => {
+    if (_deadZones().indexOf(e.target) !== -1) onWheelH(e);
+  }, { passive: false });
   cv.addEventListener('dblclick', onReset);
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
@@ -1204,8 +1218,16 @@
   const resize = (force) => {
     W = cv.clientWidth; H = cv.clientHeight;
     // constellation lives in the upper band now -- the chat column owns the
-    // middle of the screen, so centring the art there buried it under panels
+    // middle of the screen, so centring the art there buried it under panels.
+    // On tall windows the bottom-anchored chat column climbs INTO that band
+    // and parks an opaque panel over the brains -- so centre the art in the
+    // space that is actually free above the transcript grip, never behind it.
     cx = W*0.5; cy = H*0.34;
+    const _grip = document.getElementById('chatResizeGrip');
+    if (_grip) {
+      const gt = _grip.getBoundingClientRect().top - cv.getBoundingClientRect().top;
+      if (gt > 0) cy = Math.max(96, Math.min(cy, gt * 0.5));
+    }
     const pw = Math.round(W*DPR), ph = Math.round(H*DPR);
     if (!force && pw === _lastW && ph === _lastH) return;   // nothing to do
     _lastW = pw; _lastH = ph;
@@ -1231,6 +1253,13 @@
     clearTimeout(_resizeTimer);
     _resizeTimer = setTimeout(resize, 180);
   });
+  // Growing/shrinking the transcript moves the free band the brains live in;
+  // resize(false) is cheap (recentres without touching the backing store).
+  const _chatPanelEl = document.getElementById('chatPanel');
+  if (_chatPanelEl && window.MutationObserver) {
+    new MutationObserver(() => resize(false)).observe(
+      _chatPanelEl, { attributes: true, attributeFilter: ['style'] });
+  }
   window.addEventListener('orientationchange', () => {
     // iOS reports the OLD innerWidth during orientationchange; wait for it to settle.
     clearTimeout(_resizeTimer);
@@ -3400,10 +3429,16 @@
     const clamp = h => Math.max(MIN, Math.min(MAX(), h));
 
     let saved = parseInt(localStorage.getItem('cc_chat_h') || '', 10);
-    // one-time migration: heights saved under the old cramped layout (<340px)
-    // are bumped to the new taller default so the transcript opens big
-    if (!isNaN(saved) && saved < 340) { saved = 380; localStorage.setItem('cc_chat_h', '380'); }
-    if (!isNaN(saved)) panel.style.height = clamp(saved) + 'px';
+    // A saved height is the user's choice -- respected as-is (clamped to
+    // fit). The old "bump anything under 340 back to 380" migration is gone:
+    // it re-inflated a deliberately shrunk transcript on EVERY load, which on
+    // short windows parked the panel over the brain constellation.
+    if (isNaN(saved)) {
+      // First run: open at a height that leaves the brains visible above the
+      // transcript instead of assuming the window is tall enough for 380px.
+      saved = Math.min(380, Math.max(MIN, Math.round(MAX() * 0.55)));
+    }
+    panel.style.height = clamp(saved) + 'px';
 
     let startY = 0, startH = 0, scale = 1;
     const onMove = e => {
