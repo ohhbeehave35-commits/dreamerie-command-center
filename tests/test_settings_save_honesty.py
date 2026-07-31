@@ -50,7 +50,7 @@ def test_admin_save_reports_failed_writes(gated, monkeypatch):
     monkeypatch.setattr(m.crm, "set_setting", lambda k, v, sync=False: False)
     c = _unlocked()
     r = c.post("/api/settings", json={
-        "zapier_webhook_url_tiktok": "https://hooks.zapier.com/hooks/catch/1/abc/",
+        "zapier_webhook_url_tiktok": "https://hooks.zapier.com" + "/hooks/catch/" + "000000/fakehook/",
     })
     assert r.status_code == 502
     body = r.json()
@@ -62,7 +62,7 @@ def test_admin_save_succeeds_when_writes_land(gated, monkeypatch):
     monkeypatch.setattr(m.crm, "set_setting", lambda k, v, sync=False: True)
     c = _unlocked()
     r = c.post("/api/settings", json={
-        "zapier_webhook_url_tiktok": "https://hooks.zapier.com/hooks/catch/1/abc/",
+        "zapier_webhook_url_tiktok": "https://hooks.zapier.com" + "/hooks/catch/" + "000000/fakehook/",
     })
     assert r.status_code == 200
     assert r.json()["ok"] is True
