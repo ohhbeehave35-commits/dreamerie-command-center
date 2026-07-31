@@ -145,6 +145,14 @@ def record_request(method: str, path: str, status: int, duration_ms: int,
     if status == 404 and clean in ("/favicon.ico", "/apple-touch-icon.png",
                                    "/apple-touch-icon-precomposed.png"):
         return
+    # A 401 on a PAGE route is the access gate answering an unauthenticated
+    # visit -- the keep-warm ping, an uptime monitor's HEAD probe, a logged-out
+    # tab. That is the gate WORKING, not a fault (it surfaced as a permanent
+    # "1 recent fault -- HEAD / 401" toast on the flagship, 31 Jul). A 401 on
+    # an /api/ path stays recorded: that is a session breaking mid-use, which
+    # is exactly what this buffer exists to catch.
+    if status == 401 and not clean.startswith("/api"):
+        return
     kind = "server_error" if status >= 500 else ("client_error" if status >= 400 else "slow")
     _push({
         "kind": kind,
