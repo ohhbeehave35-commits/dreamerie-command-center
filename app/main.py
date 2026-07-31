@@ -1518,11 +1518,15 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
     # not permitted"), which surfaced as a 500 on EVERY message in any
     # conversation reloaded after sign-in. Whitelisting here (not blacklisting
     # "speaker") means the next UI-only field can't re-create the bug.
-    messages = [
-        {"role": m.get("role") if m.get("role") in ("user", "assistant") else "user",
-         "content": m.get("content", "")}
-        for m in history if m.get("content")
-    ] + [{"role": "user", "content": _build_user_content(user_message, file)}]
+    # Malformed turns are DROPPED, not repaired: whitespace-only content and
+    # foreign roles are also API rejections, and coercing a bad role to
+    # "user" silently rewrites the transcript. Matches the flagship exactly
+    # (fleet-aligned 31 Jul, when the flagship shipped this same outage).
+    messages = [{"role": h["role"], "content": h["content"]}
+                for h in history
+                if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+                and (h.get("content") or "").strip()]
+    messages.append({"role": "user", "content": _build_user_content(user_message, file)})
     delegated_to: List[str] = []
     artifact_url: Optional[str] = None
     artifact_title: Optional[str] = None
