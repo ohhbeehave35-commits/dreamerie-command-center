@@ -42,8 +42,26 @@ const OFFLINE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"
 <p>Your assistant needs a network connection to answer. Reconnect and this page will reload itself.</p>
 </div>
 <script>
-  addEventListener('online', () => location.reload());
-  setInterval(() => { if (navigator.onLine) location.reload(); }, 5000);
+  // Reload ONLY when the network is provably back -- never on a timer.
+  //
+  // This used to be setInterval(() => { if (navigator.onLine) location.reload() }, 5000).
+  // navigator.onLine reports true whenever ANY interface exists, even with no
+  // real connectivity, so on flaky mobile data (driving between job sites) it
+  // reloaded the page every 5 seconds -- which on the demo device looks exactly
+  // like "the platform keeps reloading mid-sentence while she's talking".
+  //
+  // So: prove the server actually answers before reloading, and back off.
+  let _delay = 3000;
+  async function _recheck() {
+    try {
+      const r = await fetch('/healthz', { cache: 'no-store' });
+      if (r && r.ok) { location.reload(); return; }
+    } catch (e) { /* still down */ }
+    _delay = Math.min(_delay * 2, 30000);   // 3s → 6s → 12s → 24s → 30s cap
+    setTimeout(_recheck, _delay);
+  }
+  addEventListener('online', () => { _delay = 3000; _recheck(); });
+  setTimeout(_recheck, _delay);
 </script>
 </body></html>`;
 
