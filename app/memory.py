@@ -117,7 +117,7 @@ def list_memory_raw(limit: int = 25, tag: str = "") -> list:
             "sort[0][direction]": "asc",
         }
         if tag.strip():
-            t = tag.strip().replace("'", "")
+            t = crm._formula_literal(tag.strip())
             params["filterByFormula"] = "FIND(LOWER('" + t + "'), LOWER({Tags}))>0"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}", headers=crm._headers(), params=params)
@@ -148,14 +148,14 @@ def recall_memory(query: str = "", tag: str = "", limit: int = 8) -> str:
         tid = _ensure_memory_table()
         formula_parts = []
         if query.strip():
-            q = query.strip().replace("'", "")
+            q = crm._formula_literal(query.strip())
             formula_parts.append(
                 "OR(FIND(LOWER('" + q + "'), LOWER({Summary}))>0, "
                 "FIND(LOWER('" + q + "'), LOWER({Content}))>0, "
                 "FIND(LOWER('" + q + "'), LOWER({Tags}))>0)"
             )
         if tag.strip():
-            t = tag.strip().replace("'", "")
+            t = crm._formula_literal(tag.strip())
             formula_parts.append("FIND(LOWER('" + t + "'), LOWER({Tags}))>0")
         params = {"pageSize": str(max(1, min(limit, 25)))}
         if formula_parts:

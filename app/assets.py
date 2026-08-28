@@ -116,7 +116,7 @@ def list_assets_raw(limit: int = 20, media_type: str = "") -> list:
             "sort[0][direction]": "desc",
         }
         if media_type.strip():
-            params["filterByFormula"] = "{Type}='" + media_type.strip().title().replace("'", "") + "'"
+            params["filterByFormula"] = "{Type}='" + crm._formula_literal(media_type.strip().title()) + "'"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}", headers=crm._headers(), params=params)
             r.raise_for_status()
@@ -145,13 +145,13 @@ def find_assets(query: str = "", media_type: str = "", limit: int = 10) -> str:
         tid = _ensure_assets_table()
         formula_parts = []
         if query.strip():
-            q = query.strip().replace("'", "")
+            q = crm._formula_literal(query.strip())
             formula_parts.append(
                 "OR(FIND(LOWER('" + q + "'), LOWER({Name}))>0, "
                 "FIND(LOWER('" + q + "'), LOWER({Tags}))>0)"
             )
         if media_type.strip():
-            formula_parts.append("{Type}='" + media_type.strip().title().replace("'", "") + "'")
+            formula_parts.append("{Type}='" + crm._formula_literal(media_type.strip().title()) + "'")
         params = {"pageSize": str(max(1, min(limit, 25)))}
         if formula_parts:
             params["filterByFormula"] = "AND(" + ",".join(formula_parts) + ")" if len(formula_parts) > 1 else formula_parts[0]

@@ -182,7 +182,7 @@ def lookup_user(username: str) -> Optional[dict]:
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}",
                       headers=crm._headers(),
-                      params={"filterByFormula": "{Username}='" + username.replace("'", "") + "'",
+                      params={"filterByFormula": "{Username}='" + crm._formula_literal(username) + "'",
                               "pageSize": "1"})
             r.raise_for_status()
             recs = r.json().get("records", [])

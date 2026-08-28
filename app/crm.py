@@ -79,6 +79,11 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {AIRTABLE_TOKEN}", "Content-Type": "application/json"}
 
 
+def _formula_literal(value: str) -> str:
+    """Escape a value embedded in an Airtable formula string literal."""
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
 # The Leads table schema Annabelle writes to.
 _FIELDS = [
     {"name": "Name", "type": "singleLineText"},
@@ -288,7 +293,7 @@ def get_history(limit: int = 40, chat_id: str = "default") -> list:
         return []
     try:
         tid = _ensure_conv_table()
-        formula = f"{{ChatID}}='{chat_id}'"
+        formula = f"{{ChatID}}='{_formula_literal(chat_id)}'"
         params = {"pageSize": str(min(int(limit or 40), 100)), "filterByFormula": formula}
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(), params=params)
@@ -463,8 +468,8 @@ def save_strategy(client: str, content: str, kind: str = "sales_strategy",
         payload = {"Client": client[:200], "Kind": kind[:60],
                    "Priority": priority[:20], "Content": content[:100000],
                    "UpdatedAt": now}
-        safe_client = client.replace("'", "")
-        safe_kind = kind.replace("'", "")
+        safe_client = _formula_literal(client)
+        safe_kind = _formula_literal(kind)
         formula = "AND({Client}='" + safe_client + "',{Kind}='" + safe_kind + "')"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
@@ -498,10 +503,10 @@ def get_strategy(client: str, kind: str = "") -> list:
         return []
     try:
         tid = _ensure_strategy_table()
-        safe_client = client.replace("'", "")
+        safe_client = _formula_literal(client)
         formula = "LOWER({Client})='" + safe_client.lower() + "'"
         if kind:
-            formula = "AND(" + formula + ",{Kind}='" + kind.replace("'", "") + "')"
+            formula = "AND(" + formula + ",{Kind}='" + _formula_literal(kind) + "')"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
                       params={"filterByFormula": formula, "pageSize": "10"})
@@ -940,7 +945,7 @@ def set_setting(key: str, value: str, sync: bool = False) -> bool:
             tid = _ensure_settings_table()
             with httpx.Client(timeout=30) as c:
                 r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
-                          params={"filterByFormula": "{Key}='" + key.replace("'", "") + "'", "pageSize": "1"})
+                          params={"filterByFormula": "{Key}='" + _formula_literal(key) + "'", "pageSize": "1"})
                 r.raise_for_status()
                 recs = r.json().get("records", [])
                 if recs:
