@@ -4114,7 +4114,7 @@ def dropbox_callback(request: Request) -> HTMLResponse:
 
 
 @app.get("/lightspeed/connect")
-def lightspeed_connect() -> Response:
+def lightspeed_connect(request: Request) -> Response:
     """Owner-only (behind the login gate). Redirects to Lightspeed's authorize page."""
     client_id = os.environ.get("LIGHTSPEED_CLIENT_ID", "")
     if not client_id:
