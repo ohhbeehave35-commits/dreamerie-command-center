@@ -428,7 +428,7 @@ def get_artifact(slug: str) -> dict:
         return {}
     try:
         tid = _ensure_artifacts_table()
-        formula = "{Slug}='" + slug.replace("'", "") + "'"
+        formula = "{Slug}='" + _formula_literal(slug) + "'"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
                       params={"filterByFormula": formula, "pageSize": "1"})
@@ -1051,7 +1051,7 @@ def add_push_subscription(endpoint: str, p256dh: str, auth: str, user_agent: str
         return False
     try:
         tid = _ensure_push_table()
-        formula = "{Endpoint}='" + endpoint.replace("'", "") + "'"
+        formula = "{Endpoint}='" + _formula_literal(endpoint) + "'"
         fields = {
             "Endpoint": endpoint, "P256dh": p256dh, "Auth": auth,
             "UserAgent": user_agent[:200], "CreatedAt": datetime.now(timezone.utc).isoformat(),
@@ -1162,7 +1162,7 @@ def remove_push_subscription(endpoint: str) -> None:
         return
     try:
         tid = _ensure_push_table()
-        formula = "{Endpoint}='" + endpoint.replace("'", "") + "'"
+        formula = "{Endpoint}='" + _formula_literal(endpoint) + "'"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(),
                       params={"filterByFormula": formula, "pageSize": "1"})
@@ -1316,10 +1316,10 @@ def list_leads(business="", status="", search="", limit=10) -> str:
         tid = _ensure_table()
         # Build an Airtable filter formula from whatever was provided.
         clauses = []
-        if business: clauses.append("{Business}='" + business.replace("'", "") + "'")
-        if status: clauses.append("{Status}='" + status.replace("'", "") + "'")
+        if business: clauses.append("{Business}='" + _formula_literal(business) + "'")
+        if status: clauses.append("{Status}='" + _formula_literal(status) + "'")
         if search:
-            s = search.replace("'", "")
+            s = _formula_literal(search)
             clauses.append("OR(FIND(LOWER('" + s + "'),LOWER({Name})),"
                            "FIND(LOWER('" + s + "'),LOWER({Request})),"
                            "FIND(LOWER('" + s + "'),LOWER({Notes})),"
