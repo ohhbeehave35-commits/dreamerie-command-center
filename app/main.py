@@ -17,6 +17,7 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
+from urllib.parse import urlencode
 
 import edge_tts
 import httpx
@@ -372,6 +373,53 @@ def startup_init():
 # Leave it unset for local use (localhost stays open).
 ACCESS_CODE = os.environ.get("ACCESS_CODE", "")
 
+# The access middleware is intentionally broad so a valid staff session can
+# reach the application shell.  These endpoints are different: they read or
+# mutate owner data, spend money, change integrations, or invoke owner-only
+# agent tools.  Keep the authorization decision here, before the route body,
+# so a newly added route cannot accidentally become "gate == owner".
+_OWNER_ONLY_EXACT_PATHS = {
+    "/api/chat", "/api/chat/stream", "/api/chat/stop", "/api/history",
+    "/api/memory/health", "/api/chats/create", "/api/chats/list",
+    "/api/content/overview", "/api/content/write", "/api/content/draft",
+    "/api/content/publish", "/api/content/image", "/api/content/video",
+    "/api/pending-requests", "/api/update-request-status", "/api/strategy",
+    "/api/strategies", "/api/push/vapid-public-key", "/api/push/subscribe",
+    "/api/push/unsubscribe", "/api/push/test", "/api/brand", "/api/results",
+    "/api/export", "/api/settings", "/api/users", "/api/change-password",
+    "/api/reset-memory", "/api/calendar/upcoming", "/api/calendar/connect",
+    "/api/drive/connect", "/api/dropbox/connect", "/lightspeed/connect",
+    "/auth/google-callback", "/auth/drive-callback", "/dropbox/callback",
+    "/lightspeed/callback",
+    "/api/agent-name", "/api/events", "/api/setup", "/api/tts", "/api/leads", "/api/assets",
+    "/api/diagnostic", "/api/features", "/api/health", "/api/support/report",
+    "/api/hubspot/lead",
+    "/api/dev/ticket",
+}
+_OWNER_ONLY_PREFIXES = (
+    "/api/users/", "/api/strategy/", "/api/passkey/register",
+    "/api/passkey/credentials/", "/api/assets/",
+)
+
+def _owner_only_path(path: str) -> bool:
+    return path in _OWNER_ONLY_EXACT_PATHS or any(
+        path.startswith(prefix) for prefix in _OWNER_ONLY_PREFIXES
+    )
+
+def _request_is_owner(request: Request) -> bool:
+    """Return true for the configured shared owner code or an owner session."""
+    access_code = get_access_code()
+    if access_code and secrets.compare_digest(
+        request.cookies.get("cc_access", ""), access_code
+    ):
+        return True
+    token = request.cookies.get("cc_session", "")
+    username = users.verify_session_token(token) if token else None
+    if not username:
+        return False
+    user = users.get_user(username)
+    return bool(user and user.get("role") == "owner")
+
 LOCK_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Dreamerie Command Center</title></head>
@@ -487,9 +535,7 @@ async def access_gate(request: Request, call_next):
             # able to enroll a fingerprint.
             "/api/passkey/enabled", "/api/passkey/auth-options", "/api/passkey/auth",
             "/api/login", "/api/public-chat", "/api/brand", "/widget",
-            "/privacy", "/auth/google-callback",
-            "/auth/drive-callback", "/dropbox/callback",
-            "/lightspeed/callback",
+            "/privacy",
             "/api/webhooks/stripe",
             "/api/proposals/sign",  # proposal viewer accessed by clients, not owners
             "/proposal",  # client-facing proposal viewer
@@ -535,6 +581,8 @@ async def access_gate(request: Request, call_next):
     if session_token:
         username = users.verify_session_token(session_token)
         if username and users.user_exists_cached(username):
+            if _owner_only_path(request.url.path) and not _request_is_owner(request):
+                return JSONResponse({"detail": "Owner access required"}, status_code=403)
             return await call_next(request)
     # Gate cookie. Guarded on get_access_code(), NOT the raw ACCESS_CODE env
     # var: the code may have been set from the Settings panel
@@ -543,6 +591,8 @@ async def access_gate(request: Request, call_next):
     # The truthiness check also stops an empty cookie matching an empty code.
     _gate_code = get_access_code()
     if _gate_code and secrets.compare_digest(request.cookies.get("cc_access", ""), _gate_code):
+        if _owner_only_path(request.url.path) and not _request_is_owner(request):
+            return JSONResponse({"detail": "Owner access required"}, status_code=403)
         return await call_next(request)
     # A direct/bookmarked/emailed link to an app PAGE (basic.html, index.html,
     # ...) must land on the sign-in form, not raw JSON -- a human just
@@ -661,19 +711,11 @@ TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
 
 
 def _client_ip(request: Request) -> str:
-    # X-Forwarded-For is "client, proxy1, proxy2, ...". The LEFTMOST entry is
-    # whatever the client sent and is fully spoofable, so we must NOT trust it.
-    # The rightmost entries are appended by infrastructure we control; counting
-    # in from the right by the number of trusted hops yields the real client IP
-    # that our own proxy actually observed and cannot be forged by the client.
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        parts = [p.strip() for p in xff.split(",") if p.strip()]
-        if parts:
-            idx = len(parts) - TRUSTED_PROXY_HOPS
-            if idx < 0:
-                idx = 0  # header shorter than expected; fall back to leftmost
-            return parts[idx]
+    # Never let an untrusted caller choose the address used for throttling.
+    # Trusting X-Forwarded-For here would let an attacker rotate a spoofed
+    # header and evade the login/unlock limiter. Proxy-aware deployments should
+    # normalize the peer address at a trusted edge or add an explicit trusted
+    # proxy allowlist before re-enabling header parsing.
     return request.client.host if request.client else "unknown"
 
 
@@ -3894,6 +3936,43 @@ def reset_memory(req: ResetMemoryRequest, request: Request) -> JSONResponse:
     return JSONResponse(summary, status_code=status)
 
 
+# OAuth state is signed, scoped to its purpose, bound to the initiating owner,
+# and consumed once.  A valid callback URL alone must not be able to commit a
+# newly exchanged credential to this deployment.
+_used_oauth_states: Dict[str, float] = {}
+_OAUTH_STATE_TTL = 600
+
+def _oauth_subject(request: Request) -> str:
+    username = _get_session_username(request)
+    if username:
+        return f"user:{username}"
+    return "access" if _access_authenticated(request) else ""
+
+def _make_oauth_state(request: Request) -> str:
+    subject = _oauth_subject(request)
+    if not subject:
+        raise PermissionError("owner authentication required")
+    return signed_tokens.mint(
+        "oauth", {"subject": subject, "nonce": secrets.token_urlsafe(24)},
+        ttl_seconds=_OAUTH_STATE_TTL,
+    )
+
+def _verify_oauth_state(state: str, request: Request) -> bool:
+    body = signed_tokens.verify("oauth", state)
+    subject = _oauth_subject(request)
+    if not body or not subject or body.get("subject") != subject:
+        return False
+    nonce = body.get("nonce")
+    now = time.time()
+    for key, seen in list(_used_oauth_states.items()):
+        if now - seen > _OAUTH_STATE_TTL:
+            _used_oauth_states.pop(key, None)
+    if not nonce or nonce in _used_oauth_states:
+        return False
+    _used_oauth_states[nonce] = now
+    return True
+
+
 # Louden Bonded Pools KPI dashboard (owner only, behind access gate)
 
 
@@ -3904,7 +3983,7 @@ def calendar_upcoming(days: int = 30) -> JSONResponse:
 
 
 @app.get("/api/calendar/connect")
-def calendar_connect() -> JSONResponse:
+def calendar_connect(request: Request) -> JSONResponse:
     """Owner-only. Returns the Google authorization URL to start the OAuth flow.
     The owner opens this URL, grants access, and Google redirects back to
     /auth/google-callback with a code we exchange for a token."""
@@ -3915,7 +3994,7 @@ def calendar_connect() -> JSONResponse:
             status_code=400,
         )
     flow.redirect_uri = gcal.REDIRECT_URI
-    state = _make_oauth_state()
+    state = _make_oauth_state(request)
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -3927,10 +4006,10 @@ def calendar_connect() -> JSONResponse:
 
 @app.get("/auth/google-callback")
 def google_callback(request: Request) -> HTMLResponse:
-    """Public (gate-exempt): Google redirects here after the owner authorizes.
+    """OAuth callback bound to the owner session that initiated the flow.
     We verify the CSRF state token, exchange the code, and store the credential."""
     state = request.query_params.get("state", "")
-    if not _verify_oauth_state(state):
+    if not _verify_oauth_state(state, request):
         return HTMLResponse("<h2>Invalid state token — possible CSRF. Please try connecting again.</h2>", status_code=400)
     code = request.query_params.get("code")
     if not code:
@@ -3953,7 +4032,7 @@ def google_callback(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/drive/connect")
-def drive_connect() -> JSONResponse:
+def drive_connect(request: Request) -> JSONResponse:
     """Owner-only. Returns the Google OAuth URL for Drive.readonly scope."""
     flow = files_gdrive.get_oauth_flow()
     if not flow:
@@ -3962,7 +4041,7 @@ def drive_connect() -> JSONResponse:
             status_code=400,
         )
     flow.redirect_uri = files_gdrive.REDIRECT_URI
-    state = _make_oauth_state()
+    state = _make_oauth_state(request)
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
@@ -3976,7 +4055,7 @@ def drive_connect() -> JSONResponse:
 def drive_callback(request: Request) -> HTMLResponse:
     """Public (gate-exempt). Google redirects here after the owner authorizes Drive."""
     state = request.query_params.get("state", "")
-    if not _verify_oauth_state(state):
+    if not _verify_oauth_state(state, request):
         return HTMLResponse("<h2>Invalid state token — possible CSRF. Try again.</h2>", status_code=400)
     code = request.query_params.get("code")
     if not code:
@@ -3999,7 +4078,7 @@ def drive_callback(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/dropbox/connect")
-def dropbox_connect() -> JSONResponse:
+def dropbox_connect(request: Request) -> JSONResponse:
     """Owner-only. Returns the Dropbox OAuth authorize URL."""
     url = files_dropbox.authorize_url()
     if not url:
@@ -4008,12 +4087,16 @@ def dropbox_connect() -> JSONResponse:
                       "You can also skip OAuth and set DROPBOX_ACCESS_TOKEN directly for testing."},
             status_code=400,
         )
-    return JSONResponse({"auth_url": url})
+    state = _make_oauth_state(request)
+    separator = "&" if "?" in url else "?"
+    return JSONResponse({"auth_url": url + separator + urlencode({"state": state})})
 
 
 @app.get("/dropbox/callback")
 def dropbox_callback(request: Request) -> HTMLResponse:
-    """Public (gate-exempt). Dropbox redirects here after authorization."""
+    """OAuth callback bound to the owner session that initiated the flow."""
+    if not _verify_oauth_state(request.query_params.get("state", ""), request):
+        return HTMLResponse("<h2>Invalid state token — possible CSRF. Try again.</h2>", status_code=400)
     code = request.query_params.get("code", "")
     if not code:
         return HTMLResponse("<h2>No authorization code received. Try again.</h2>", status_code=400)
@@ -4036,7 +4119,7 @@ def lightspeed_connect() -> Response:
     client_id = os.environ.get("LIGHTSPEED_CLIENT_ID", "")
     if not client_id:
         return HTMLResponse("<h2>LIGHTSPEED_CLIENT_ID isn't set in Render yet.</h2>", status_code=400)
-    state = _make_oauth_state()
+    state = _make_oauth_state(request)
     url = (
         "https://cloud.lightspeedapp.com/auth/oauth/authorize"
         f"?response_type=code&client_id={client_id}&scope=employee:all&state={state}"
@@ -4046,10 +4129,8 @@ def lightspeed_connect() -> Response:
 
 @app.get("/lightspeed/callback")
 def lightspeed_callback(request: Request) -> HTMLResponse:
-    """Public (gate-exempt): Lightspeed redirects here after the owner authorizes.
-    Exchanges the code for tokens and displays them for pasting into Render env vars."""
-    import html as _html
-    if not _verify_oauth_state(request.query_params.get("state", "")):
+    """OAuth callback bound to the owner session; tokens stay server-side."""
+    if not _verify_oauth_state(request.query_params.get("state", ""), request):
         return HTMLResponse("<h2>Invalid state token. Start again from /lightspeed/connect.</h2>", status_code=400)
     code = request.query_params.get("code", "")
     if not code:
@@ -4070,7 +4151,7 @@ def lightspeed_callback(request: Request) -> HTMLResponse:
     )
     if resp.status_code != 200:
         return HTMLResponse(
-            f"<h2>Token exchange failed ({resp.status_code})</h2><pre>{_html.escape(resp.text)}</pre>",
+            "<h2>Token exchange failed. Please start the connection again.</h2>",
             status_code=400,
         )
     tokens = resp.json()
@@ -4096,25 +4177,20 @@ def lightspeed_callback(request: Request) -> HTMLResponse:
             business_id = str(account.get("accountID", ""))
     except Exception:
         pass
-    rows = "".join(
-        f"<p style='margin:18px 0'><b>{name}</b><br>"
-        f"<code style='display:block;background:#f4f4f4;padding:10px;border-radius:6px;"
-        f"word-break:break-all;user-select:all'>{_html.escape(value) or '(not found — see note below)'}</code></p>"
-        for name, value in [
-            ("LIGHTSPEED_ACCESS_TOKEN", access_token),
-            ("LIGHTSPEED_REFRESH_TOKEN", refresh_token),
-            ("LIGHTSPEED_BUSINESS_ID", business_id),
-        ]
-    )
+    # The callback is a browser endpoint; never put bearer credentials in the
+    # response body, browser history, screenshots, or proxy logs.
+    if not access_token:
+        return HTMLResponse("<h2>Lightspeed did not return an access token.</h2>", status_code=400)
+    crm.set_setting("lightspeed_access_token", access_token, sync=True)
+    if refresh_token:
+        crm.set_setting("lightspeed_refresh_token", refresh_token, sync=True)
+    if business_id:
+        crm.set_setting("lightspeed_business_id", business_id, sync=True)
     return HTMLResponse(
         "<html lang='en'><body style='font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 20px'>"
         "<h2>Lightspeed connected!</h2>"
-        "<p>Copy each value below into the matching Render environment variable, "
-        "then click <b>Save, rebuild, and deploy</b>. Close this tab when done — "
-        "these values are secrets.</p>"
-        f"{rows}"
-        "<p style='color:#666;font-size:14px'>If Business ID shows as not found, it's visible in "
-        "Lightspeed Back Office under Settings once logged in.</p>"
+        "<p>Lightspeed connected successfully. Credentials were stored securely on the server; "
+        "no access tokens are displayed here.</p>"
         "</body></html>"
     )
 
@@ -4572,6 +4648,14 @@ def sign_proposal(req: ProposalSignRequest, request: Request) -> JSONResponse:
     Called by the proposal.html viewer when the client accepts.
     Gate-exempt: the client isn't logged in.
     """
+    # This legacy viewer does not receive a server-issued proposal capability.
+    # Do not accept arbitrary client-supplied proposal IDs and signer data as a
+    # state-changing operation. A future signing flow must issue a short-lived,
+    # one-time token tied to a stored proposal before enabling this route.
+    return JSONResponse({"ok": False,
+                         "detail": "This proposal link cannot accept signatures yet."},
+                        status_code=410)
+
     # Per-IP throttle -- open audit finding #6. Same sliding-window pattern
     # already used for /api/public-chat and /api/unlock.
     ip = _client_ip(request)
