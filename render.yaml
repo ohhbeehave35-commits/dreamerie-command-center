@@ -4,7 +4,12 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # --proxy-headers makes uvicorn set request.client.host from X-Forwarded-For
+    # so per-IP rate limiting sees the real client, not Render's edge proxy.
+    # --forwarded-allow-ips=* trusts the header because on Render every request
+    # arrives through Render's own proxy; tighten to the trusted edge CIDR if the
+    # app is ever exposed to direct (non-proxied) traffic.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false          # paste in the Render dashboard, never in git

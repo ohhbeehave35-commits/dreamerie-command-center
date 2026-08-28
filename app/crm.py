@@ -80,8 +80,28 @@ def _headers() -> dict:
 
 
 def _formula_literal(value: str) -> str:
-    """Escape a value embedded in an Airtable formula string literal."""
-    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+    """Escape a value for embedding inside a single-quoted Airtable formula
+    string literal, e.g. ``"{Field}='" + _formula_literal(v) + "'"``.
+
+    Airtable formula string literals do NOT honor backslash escaping, so the
+    previous ``\\'`` approach was both wrong and unsafe: the ``\\`` became a
+    literal backslash and the ``'`` still closed the string. That made the
+    injection guard ineffective (an apostrophe still breaks out of the literal)
+    AND broke every legitimate value containing an apostrophe -- client names,
+    usernames like ``O'Brien`` -- because the lookup formula was malformed.
+
+    Instead, neutralize each apostrophe by closing the single-quoted literal,
+    concatenating one literal apostrophe expressed as the double-quoted string
+    ``"'"``, then reopening it: every ``'`` becomes ``' & "'" & '``. Since each
+    apostrophe is turned into an inert string-concatenation, a hostile value can
+    never break out into formula logic (injection-safe) while ordinary
+    apostrophes are preserved exactly (``{Field}='O' & "'" & 'Brien'`` matches
+    ``O'Brien``). Backslashes are ordinary characters in Airtable formulas, so
+    they are left untouched. Works unchanged for every caller because they all
+    wrap the result in single quotes -- including the FIND(LOWER('...')) and
+    ``.lower()`` sites, where lowercasing the concatenation glue is a no-op.
+    """
+    return str(value).replace("'", "' & \"'\" & '")
 
 
 # The Leads table schema Annabelle writes to.
