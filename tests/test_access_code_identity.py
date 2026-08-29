@@ -76,6 +76,13 @@ def test_per_user_session_still_gets_its_own_isolated_bucket(access_deployment, 
     monkeypatch.setattr(users, "verify_session_token",
                         lambda t: "alice" if t == "alice-token" else None)
     monkeypatch.setattr(users, "user_exists_cached", lambda u: True)
+    # /api/history is owner-only, so the gate resolves alice's role via
+    # users.get_user(). Left unstubbed that hits the real Airtable meta URL,
+    # 404s, and 403s the request -- a network dependency, not a real assertion.
+    # Stub the Airtable read so alice is a hermetic owner and the test proves
+    # only what it claims: her session gets its own isolated bucket.
+    monkeypatch.setattr(users, "get_user",
+                        lambda u: {"username": u, "role": "owner"} if u == "alice" else None)
     c = TestClient(app, base_url=HTTPS)
     c.cookies.set("cc_session", "alice-token")
     r = c.get("/api/history?chat_id=default")
