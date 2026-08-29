@@ -18,6 +18,7 @@ configured.
 import httpx
 
 from . import crm
+from .crm import _formula_literal
 
 COST_TABLE = "Video Cost Log"
 
@@ -64,7 +65,7 @@ def _find_project_record(project: str):
     tid = _ensure_cost_table()
     with httpx.Client(timeout=30) as c:
         r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}", headers=crm._headers(),
-                  params={"filterByFormula": "LOWER({Project})='" + project.strip().lower().replace("'", "") + "'",
+                  params={"filterByFormula": f"LOWER({{Project}})='{_formula_literal(project.strip().lower())}'",
                           "pageSize": "1"})
         r.raise_for_status()
     recs = r.json().get("records", [])

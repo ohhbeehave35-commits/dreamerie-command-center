@@ -24,6 +24,7 @@ import os
 import httpx
 
 from . import crm
+from .crm import _formula_literal
 
 _CLAIM_RE = re.compile(
     r'\b\d[\d,\.]*\s*(%|\+|\$|years?|installs?|clients?|jobs?|reviews?|customers?|projects?|homes?|pools?)',
@@ -187,7 +188,7 @@ def list_posts(status: str = "", limit: int = 10) -> str:
         params = {"pageSize": str(max(1, min(limit, 25))),
                   "sort[0][field]": "Title", "sort[0][direction]": "desc"}
         if status:
-            params["filterByFormula"] = "{Status}='" + status.replace("'", "") + "'"
+            params["filterByFormula"] = "{Status}='" + _formula_literal(status) + "'"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}", headers=crm._headers(), params=params)
             r.raise_for_status()
@@ -216,7 +217,7 @@ def list_posts_structured(status: str = "", limit: int = 25) -> list[dict]:
         tid = _ensure_posts_table()
         params = {"pageSize": str(max(1, min(limit, 100)))}
         if status:
-            params["filterByFormula"] = "{Status}='" + status.replace("'", "") + "'"
+            params["filterByFormula"] = "{Status}='" + _formula_literal(status) + "'"
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}",
                       headers=crm._headers(), params=params)

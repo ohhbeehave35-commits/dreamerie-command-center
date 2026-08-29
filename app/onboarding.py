@@ -34,6 +34,7 @@ import logging
 import httpx
 
 from . import crm
+from .crm import _formula_literal
 
 log = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ def get_profile(client: str, edition: str = "established") -> dict:
                 "missing_required": required_for(edition), "reachable": False}
     try:
         tid = _ensure_table()
-        safe = client.replace("'", "")
+        safe = _formula_literal(client)
         with httpx.Client(timeout=30) as c:
             r = c.get(f"{crm._API}/v0/{crm.AIRTABLE_BASE_ID}/{tid}", headers=crm._headers(),
                       params={"filterByFormula": f"{{Client}}='{safe}'", "pageSize": "100"})
