@@ -4989,6 +4989,19 @@ body {{ margin:0; padding:40px 20px; background:#0d0d10; color:#e6e2d6; font-fam
     return HTMLResponse(page)
 
 
+@app.get("/static/basic.html")
+def basic_shell():
+    # Registered BEFORE the /static mount below so this explicit route wins
+    # over the mounted static file for this one path -- every other /static/*
+    # path still falls through to StaticFiles untouched. Needed because
+    # basic.html is Susan's actual phone shell (index.html auto-redirects
+    # small screens here) and, like index() above, a raw static file can't
+    # have __CC_LOADED_REV__ substituted (14 Sep v2 gap fix).
+    html = pathlib.Path("static/basic.html").read_text(encoding="utf-8")
+    rev = (os.environ.get("RENDER_GIT_COMMIT") or "unknown")[:12]
+    return HTMLResponse(html.replace("__CC_LOADED_REV__", rev))
+
+
 # Serve the frontend
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

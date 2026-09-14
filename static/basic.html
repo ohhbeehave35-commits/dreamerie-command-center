@@ -4,6 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>The Dreamerie Command Center</title>
+<!-- Director order 14 Sep (v2): this is Susan's actual phone shell (the
+     desktop dashboard auto-redirects small screens here), so it needs the
+     same relaunch banner as index.html, not just the desktop page. -->
+<meta name="cc-loaded-rev" content="__CC_LOADED_REV__">
+<script>window.__CC_LOADED_REV = document.querySelector('meta[name="cc-loaded-rev"]').content;</script>
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -615,5 +620,6 @@ form.addEventListener('submit', async (e) => {
   }
 });
 </script>
+<script src="/static/relaunch-pill.js"></script>
 </body>
 </html>
