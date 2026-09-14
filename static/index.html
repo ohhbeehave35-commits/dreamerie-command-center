@@ -7,6 +7,11 @@
 <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <title>The Dreamerie Command Center</title>
+<!-- Director order 14 Sep: same relaunch-banner mechanism as the Stinger
+     Command Center console, ported here -- this dashboard had none at all,
+     so Susan could sit on a stale deploy forever with no way to know. -->
+<meta name="cc-loaded-rev" content="__CC_LOADED_REV__">
+<script>window.__CC_LOADED_REV = document.querySelector('meta[name="cc-loaded-rev"]').content;</script>
 <script>
   // This dashboard is a fixed-size 3D canvas built for desktop -- on a phone
   // it just shrinks to fit and everything becomes unreadable/untappable.
@@ -4526,6 +4531,7 @@
     window.addEventListener('orientationchange', () => setTimeout(reflow, 250));
   })();
 </script>
+<script src="/static/relaunch-pill.js"></script>
 
 </body>
 </html>

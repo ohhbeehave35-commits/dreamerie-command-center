@@ -10,6 +10,7 @@ Requires ANTHROPIC_API_KEY set in the environment (see .env.example).
 import json
 import logging
 import os
+import pathlib
 import re
 import secrets
 import threading
@@ -4994,4 +4995,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse("static/index.html")
+    # __CC_LOADED_REV__ feeds static/relaunch-pill.js's own comparison
+    # against /healthz's "rev" field (14 Sep gap fix -- this page had no
+    # relaunch mechanism at all, ported from the Stinger Command Center
+    # console). A plain FileResponse can't substitute it, so this reads and
+    # templates the file instead, matching /healthz's own RENDER_GIT_COMMIT.
+    html = pathlib.Path("static/index.html").read_text(encoding="utf-8")
+    rev = (os.environ.get("RENDER_GIT_COMMIT") or "unknown")[:12]
+    return HTMLResponse(html.replace("__CC_LOADED_REV__", rev))
