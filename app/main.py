@@ -64,6 +64,7 @@ from . import config_check
 from . import support
 from . import passkeys
 from . import signed_tokens
+from . import annabelle_gaps
 from .agents import (
     MAIN_BRAIN_SYSTEM_PROMPT,
     build_main_brain_prompt,
@@ -1762,6 +1763,15 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                             + (" (required)" if _nx.get("required") else " (optional)")
                             + f" [{_nx['id']}]:\n\n{_nx['question']}"
                         )
+            elif block.name in (
+                "write_content", "list_strategies", "get_client_strategy",
+                "save_strategy", "get_brand", "set_brand",
+                "get_settings", "update_settings", "list_team_users",
+                "add_team_user", "delete_team_user", "reset_team_user_password",
+                "reset_customer_memory", "export_summary", "get_results",
+                "list_pending_requests", "set_request_status", "confirm_action"):
+                delegated_to.append("Owner tools")
+                answer = annabelle_gaps.run(block.name, block.input or {}, chat_id=chat_id, request_id=request_id)
             elif block.name == "draft_email":
                 delegated_to.append("Email (draft)")
                 to = block.input.get("to", "")
@@ -2910,6 +2920,7 @@ def chat(req: ChatRequest, request: Request) -> ChatResponse:
     req.clean()
     _persist_user_message(request, req)   # before the model runs: a stop must not lose it
     sys_prompt, tools = _owner_chat_setup(req)
+    annabelle_gaps.note_session(_scoped_chat_id(request, req.chat_id), _is_superadmin(request))
     try:
         result = run_main_brain(req.message, req.history, sys_prompt, tools, enable_search=True,
                                  persona="owner", file=req.file, request_id=req.request_id,
@@ -2996,6 +3007,7 @@ def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     req.clean()
     _persist_user_message(request, req)   # before the model runs: a stop must not lose it
     sys_prompt, tools = _owner_chat_setup(req)
+    annabelle_gaps.note_session(_scoped_chat_id(request, req.chat_id), _is_superadmin(request))
 
     def event_source():
         result: Optional[ChatResponse] = None
@@ -3628,6 +3640,12 @@ def save_settings(req: SettingsUpdate, request: Request) -> JSONResponse:
     # "Saved", and nothing persisted. Multi-user deployments set no cc_access,
     # so this grants nothing there.
     is_owner = ((user or {}).get("role") == "owner") or _access_authenticated(request)
+    return _apply_settings(req, username, is_owner)
+
+
+def _apply_settings(req: "SettingsUpdate", username: Optional[str], is_owner: bool) -> JSONResponse:
+    """The body of the Settings Save button. Also used by Annabelle's update_settings
+    (after the owner's yes) so chat and screen share one code path."""
 
     # Admin-only settings — only owners may change these.
     # Saved SYNCHRONOUSLY (sync=True) and failures collected: these are the
@@ -3801,14 +3819,7 @@ def add_user(req: AddUserRequest, request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "detail": reason}, status_code=400)
     created, why = users.add_user(req.username, req.email, req.password, req.role)
     if created:
-        # Set default user preferences
-        if crm.is_configured():
-            try:
-                crm.set_user_setting(req.username, "chat_model_default", get_default_model_key())
-                crm.set_user_setting(req.username, "automation_level", get_automation_level())
-                crm.set_user_setting(req.username, "tts_voice_override", get_tts_voice())
-            except Exception as e:
-                log.warning(f"Could not set defaults for new user {req.username}: {e}")
+        _set_new_user_defaults(req.username)
         support.record_note("user_added", f"{req.username} ({req.role})", path="/api/users")
         return JSONResponse({"ok": True, "detail": "User created"})
     # Put the REAL reason on the support page too. The middleware only records
@@ -3934,6 +3945,47 @@ def reset_memory(req: ResetMemoryRequest, request: Request) -> JSONResponse:
     print(f"[RESET] Customer data reset by super-admin '{who}': {summary}")
     status = 200 if summary.get("ok") else 500
     return JSONResponse(summary, status_code=status)
+
+
+def _set_new_user_defaults(username: str) -> None:
+    """Default user preferences for a new login (shared by the Add user button
+    and Annabelle's add_team_user)."""
+    if crm.is_configured():
+        try:
+            crm.set_user_setting(username, "chat_model_default", get_default_model_key())
+            crm.set_user_setting(username, "automation_level", get_automation_level())
+            crm.set_user_setting(username, "tts_voice_override", get_tts_voice())
+        except Exception as e:
+            log.warning(f"Could not set defaults for new user {username}: {e}")
+
+
+def _gaps_settings_read() -> dict:
+    """Non-secret Settings for Annabelle's get_settings. Never keys, passwords,
+    the access code or webhook URLs."""
+    return {
+        "search_cap": get_search_cap(), "search_count": crm.get_search_count(),
+        "public_chat_cap": get_public_chat_cap(), "public_chat_count": crm.get_chat_count("public"),
+        "owner_chat_cap": get_owner_chat_cap(), "owner_chat_count": crm.get_chat_count("owner"),
+        "tts_voice": get_tts_voice(), "tts_voice_options": TTS_VOICE_OPTIONS,
+        "automation_level": get_automation_level(), "automation_level_options": list(AUTOMATION_LEVELS),
+        "chat_model_default": get_default_model_key(), "chat_model_options": list(MODEL_CHOICES),
+        "media_image_provider": crm.get_setting("media_image_provider", "chatgpt") if crm.is_configured() else "chatgpt",
+        **{f"website_{b}": (crm.get_setting(f"website__{b}", "") if crm.is_configured() else "") for b in brand_identity.BRANDS},
+        "gmail_connected": emailer.is_configured(), "calendar_connected": gcal.is_configured(),
+        "social_connected": social.is_configured(), "elevenlabs_connected": voice_eleven.is_configured(),
+        "openai_connected": is_openai_configured(), "xai_connected": media_gen.is_grok_configured(),
+    }
+
+
+annabelle_gaps.configure(
+    content_in=lambda **kw: ContentWriteIn(**kw),
+    content_write=lambda body: content_write(body),
+    settings_read=lambda: _gaps_settings_read(),
+    settings_choices=lambda: {"tts_voice": tuple(TTS_VOICE_OPTIONS), "automation_level": tuple(AUTOMATION_LEVELS),
+                              "chat_model_default": tuple(MODEL_CHOICES), "brands": tuple(brand_identity.BRANDS)},
+    apply_settings=lambda fields: _apply_settings(SettingsUpdate(**fields), None, True),
+    after_user_added=lambda username: _set_new_user_defaults(username),
+)
 
 
 # OAuth state is signed, scoped to its purpose, bound to the initiating owner,

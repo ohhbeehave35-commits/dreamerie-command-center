@@ -1402,6 +1402,11 @@ TOOL_NAME_TO_AGENT_KEY.update({
     "ask_seo_auditor": "seo_auditor",
 })
 
+# Owner-chat tools for screens that had no chat path (strategy, brand, settings,
+# team logins, reset memory, export, results, build requests, content write).
+from .annabelle_gaps import TOOLS as _GAP_TOOLS, TOOL_NAMES as _GAP_TOOL_NAMES
+DELEGATION_TOOLS.extend(t for t in _GAP_TOOLS if t["name"] not in {d["name"] for d in DELEGATION_TOOLS})
+
 # ---- per-mode tool allowlists (5 modes; combined applies no filter) ----------
 _SHARED_MODE_TOOLS = {
     "log_lead", "find_leads", "log_event", "find_events", "log_build_request",
@@ -1417,7 +1422,7 @@ _SHARED_MODE_TOOLS = {
     "list_capabilities", "flag_for_review", "log_skill_note", "set_speaker", "client_interview",
     "list_dropbox_folder", "search_dropbox", "save_dropbox_file",
     "list_drive_files", "search_drive", "save_drive_file",
-}
+} | _GAP_TOOL_NAMES
 MODE_TOOLS = {
     "dreamerie": _SHARED_MODE_TOOLS | {"ask_dreamerie_agent"},
     "suzy_d":    _SHARED_MODE_TOOLS | {"ask_suzy_d_agent"},
