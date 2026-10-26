@@ -46,8 +46,6 @@ class Store:
         m.setattr(ag.users, "add_user", lambda n, e, p, r: self._add_user(n, e, p, r))
         m.setattr(ag.users, "delete_user", lambda n: self.users.pop(n, None) is not None)
         m.setattr(ag.users, "update_user_password", lambda n, p: self.calls.append(("pw", n, p)) or True)
-        m.setattr(ag.emailer, "is_configured", lambda: True)
-        m.setattr(ag.emailer, "send_email", lambda to, subj, body, business="": self._send(to, subj, body))
         ag.configure(
             content_in=lambda **kw: types.SimpleNamespace(**kw),
             content_write=lambda body: types.SimpleNamespace(body=b'{"ok": true, "content": "Fresh candles", "hashtags": "#a", "claims": ["20% off"], "needs_media": ""}'),
@@ -144,33 +142,25 @@ def test_settings_changes_are_whitelisted_and_secrets_stay_manual(st):
         assert "by hand" in ag.run("update_settings", {secret_field: "s"}, "c", "t3")
 
 
-def test_add_user_never_puts_the_password_in_chat(st):
-    d = ag.run("add_team_user", {"username": "amy", "email": "amy@x.com", "role": "staff"}, "c", "t1")
-    assert "amy" not in st.users and st.mail == []
-    out = ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "t2")
-    assert "amy" in st.users and len(st.mail) == 1
-    to, subj, body = st.mail[0]
-    temp = body.split("login: ", 1)[1].split("\n", 1)[0]
-    assert to == "amy@x.com" and len(temp) >= 12
-    assert temp not in d and temp not in out and "password" not in out.replace("temporary password", "")
-    assert ("defaults", "amy") in st.calls
+def test_add_user_is_manual_only_no_draft_no_user_no_email(st):
+    out = ag.run("add_team_user", {"username": "amy", "email": "amy@x.com", "role": "staff"}, "c", "t1")
+    assert "by hand on the Settings screen" in out and "draft" not in out.lower().replace("nothing was changed", "")
+    assert "amy" not in st.users and st.mail == [] and st.calls == []
+    assert "add_team_user" not in ag.DRAFT_TOOLS
+    assert "confirm_action" not in out and not ag._pending
 
 
-def test_add_user_rejects_duplicates_and_bad_input(st):
-    assert "already exists" in ag.run("add_team_user", {"username": "nick", "email": "n@x.com"}, "c", "t1")
-    assert "email" in ag.run("add_team_user", {"username": "zed", "email": "nope"}, "c", "t1")
+def test_reset_password_is_manual_only_no_email_no_change(st):
+    out = ag.run("reset_team_user_password", {"username": "nick"}, "c", "t1")
+    assert "by hand on the Settings screen" in out
+    assert st.mail == [] and st.calls == [] and not ag._pending
+    assert "reset_team_user_password" not in ag.DRAFT_TOOLS
+    assert "temporary" not in out.lower()
 
 
-def test_reset_password_emails_it_and_only_changes_it_after_the_send(st):
-    d = ag.run("reset_team_user_password", {"username": "nick"}, "c", "t1")
-    st.mail_ok = False
-    out = ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "t2")
-    assert "NOT changed" in out and not [c for c in st.calls if c[0] == "pw"]
-    st.mail_ok = True
-    d = ag.run("reset_team_user_password", {"username": "nick"}, "c", "t3")
-    out = ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "t4")
-    pw = [c for c in st.calls if c[0] == "pw"][0][2]
-    assert pw in st.mail[-1][2] and pw not in out and pw not in d
+def test_no_tool_emails_a_password():
+    assert not hasattr(ag, "_send_temp_password")
+    assert not hasattr(ag, "password_reset")
 
 
 def test_delete_user_protects_the_main_owner_and_last_owner(st):

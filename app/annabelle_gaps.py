@@ -8,9 +8,10 @@ Pattern (same as draft_email / send_email in this app, now enforced in code):
   * every tool wraps the same function the screen's button calls;
   * keys, API tokens, app passwords, the access code and webhooks stay
     manual-only (Settings screen);
-  * a password is never put into the chat: add-user and reset-password
-    generate a temporary password on the server and email it to the account's
-    own address; the chat only says where it went.
+  * a password is never put into the chat and never emailed: Dreamerie has no
+    invite or reset link flow, so add-user and reset-password are MANUAL-ONLY
+    (Settings screen). The tools stay so Annabelle can point there; they
+    draft nothing and change nothing.
 
 main.py calls configure() once with the few functions that live in main.py and
 note_session() before each owner turn.
@@ -25,7 +26,7 @@ import secrets
 import time
 from typing import Any, Callable, Dict, Optional
 
-from . import brand, crm, emailer, password_reset, results, users
+from . import brand, crm, results, users
 
 TTL_SECONDS = 300
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -84,14 +85,14 @@ TOOLS = [
            "website_dreamerie": _S, "website_suzy_d": _S, "website_bear_arms": _S, "website_peptides": _S}),
     _tool("list_team_users", "List the team logins (username, email, role, last login). Never shows passwords."),
     _tool("add_team_user",
-          "DRAFT a new team login (username, email, role owner or staff). No password is typed or shown: a temporary one is generated and emailed to that address. Nothing happens until Susan says yes and you call confirm_action.",
+          "MANUAL ONLY. Dreamerie has no invite link, so a new team login is added by hand on the Settings screen (the person sets their own password). Calling this changes nothing; it tells Susan where to go.",
           {"username": _S, "email": _S, "role": {"type": "string", "enum": ["owner", "staff"]}},
           ["username", "email"]),
     _tool("delete_team_user",
           "DRAFT deleting a team login. Cannot delete the main owner or the last owner. Nothing happens until Susan says yes and you call confirm_action.",
           {"username": _S}, ["username"]),
     _tool("reset_team_user_password",
-          "DRAFT a password reset for a team login. A new temporary password is generated and emailed to that user's own address; it is never shown in chat. Nothing happens until Susan says yes and you call confirm_action.",
+          "MANUAL ONLY. Dreamerie has no reset link, so a password reset is done by hand on the Settings screen. Calling this changes nothing; it tells Susan where to go.",
           {"username": _S}, ["username"]),
     _tool("reset_customer_memory",
           "DRAFT wiping all customer data and client identity for a fresh handoff (logins and keys are kept). Super-admin only. Needs Susan to type the word RESET in her next message; pass it as typed to confirm_action.",
@@ -110,8 +111,8 @@ TOOLS = [
           {"draft_id": _S, "typed": _S}, ["draft_id"]),
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
-DRAFT_TOOLS = {"save_strategy", "set_brand", "update_settings", "add_team_user", "delete_team_user",
-               "reset_team_user_password", "reset_customer_memory", "set_request_status"}
+DRAFT_TOOLS = {"save_strategy", "set_brand", "update_settings", "delete_team_user",
+               "reset_customer_memory", "set_request_status"}
 
 
 # ---------------------------------------------------------------- drafts --
@@ -146,14 +147,10 @@ def _superadmin_name() -> str:
     return os.environ.get("SUPERADMIN_USERNAME", "owner").strip()
 
 
-def _send_temp_password(to: str, username: str, temp: str, verb: str) -> str:
-    """Email the temporary password to the account's own address. Returns '' on
-    success, else the reason. The value never leaves this function except in the
-    email body."""
-    body = (f"Hello {username},\n\nA temporary password was {verb} for your login: {temp}\n\n"
-            "Sign in and change it from Settings right away. If you did not expect this, tell the owner.\n")
-    out = emailer.send_email(to, "Your temporary password", body)
-    return "" if str(out).startswith("Sent to") else str(out)
+_MANUAL_ADD = ("Adding a team login is done by hand on the Settings screen: Dreamerie has no invite link, "
+               "and I will not email or type a password. Nothing was changed.")
+_MANUAL_RESET = ("Resetting a password is done by hand on the Settings screen: Dreamerie has no reset link, "
+                 "and I will not email or type a password. Nothing was changed.")
 
 
 # ----------------------------------------------------------------- reads --
@@ -197,6 +194,10 @@ def _run_read(name: str, a: dict) -> str:
                 "I do not paste it into chat.")
     if name == "get_results":
         return json.dumps(results.get_monthly_summary(str(a.get("month") or "")), default=str)
+    if name == "add_team_user":
+        return _MANUAL_ADD
+    if name == "reset_team_user_password":
+        return _MANUAL_RESET
     if name == "list_pending_requests":
         rows = [r for r in crm.get_pending_requests() if r.get("status") in ("New", "Building")]
         return (f"{len(rows)} open build requests: " + "; ".join(f"{r.get('id') or r.get('record_id')}: {r.get('request') or r.get('title')} [{r.get('status')}]" for r in rows)) if rows else "No open build requests."
@@ -263,37 +264,16 @@ def _run_draft(name: str, a: dict, chat_id: str, request_id: str) -> str:
         if not rid or st not in ("New", "Building", "Done"):
             return "I need the request id and a status of New, Building or Done."
         return hold({"req_id": rid, "status": st}, f"move build request {rid} to {st}.")
-    if name == "add_team_user":
-        uname, email, role = str(a.get("username") or "").strip(), str(a.get("email") or "").strip(), str(a.get("role") or "staff").strip()
-        ok, why = users.validate_username(uname)
-        if not ok:
-            return why
-        if not _EMAIL_RE.match(email):
-            return "That email address does not look right."
-        if role not in ("owner", "staff"):
-            return "Role must be owner or staff."
-        if users.get_user(uname):
-            return f"A login named {uname} already exists."
-        if not emailer.is_configured():
-            return "Email is not connected, so I cannot send them a temporary password. Connect Gmail in Settings first, or add them on the Settings screen."
-        return hold({"username": uname, "email": email, "role": role},
-                    f"create the {role} login {uname} for {email}. A temporary password will be emailed to that address; it will not appear here.")
-    if name in ("delete_team_user", "reset_team_user_password"):
+    if name == "delete_team_user":
         uname = str(a.get("username") or "").strip()
         u = users.get_user(uname) if uname else None
         if not u:
             return f"No login named {uname or '(none given)'}."
-        if name == "delete_team_user":
-            if uname == _superadmin_name():
-                return f"{uname} is the main owner login and cannot be deleted here."
-            if (u.get("role") or "owner") == "owner" and len(_owners()) <= 1:
-                return "That is the last owner login and cannot be deleted."
-            return hold({"username": uname}, f"delete the login {_user_label(u)}. Their chat history stays but they can no longer sign in.")
-        if not u.get("email"):
-            return f"{uname} has no email on file, so I cannot send a temporary password. Use the Settings screen."
-        if not emailer.is_configured():
-            return "Email is not connected, so I cannot send the temporary password. Use the Settings screen."
-        return hold({"username": uname}, f"reset the password for {_user_label(u)}. A new temporary password will be emailed to {u['email']}; it will not appear here.")
+        if uname == _superadmin_name():
+            return f"{uname} is the main owner login and cannot be deleted here."
+        if (u.get("role") or "owner") == "owner" and len(_owners()) <= 1:
+            return "That is the last owner login and cannot be deleted."
+        return hold({"username": uname}, f"delete the login {_user_label(u)}. Their chat history stays but they can no longer sign in.")
     if name == "reset_customer_memory":
         if not _superadmin_chats.get(chat_id or "default"):
             return "Only the super-admin login can wipe customer data. Nothing was changed."
@@ -316,43 +296,8 @@ def _apply(d: dict, chat_id: str, typed: str) -> str:
         return "Settings saved." if r.get("ok") else "Not saved: " + str(r.get("detail") or r)
     if t == "set_request_status":
         return f"Request {a['req_id']} is now {a['status']}." if crm.update_request_status(a["req_id"], a["status"]) else "That did not save."
-    if t == "add_team_user":
-        if users.get_user(a["username"]):
-            return f"A login named {a['username']} already exists. Nothing was changed."
-        temp = password_reset.generate_temporary_password()
-        ok, why = users.validate_password(temp)
-        if not ok:
-            return "Could not generate a password. Nothing was changed."
-        created, why = users.add_user(a["username"], a["email"], temp, a["role"])
-        if not created:
-            return "The login was not created: " + (why or "unknown reason")
-        err = _send_temp_password(a["email"], a["username"], temp, "set")
-        hook = _deps.get("after_user_added")
-        if hook:
-            try:
-                hook(a["username"])
-            except Exception as e:
-                print(f"ADD_USER_DEFAULTS_FAIL user={a['username']} {type(e).__name__}: {e}")
-        if err:
-            return (f"The login {a['username']} was created, but the email with the temporary password did not send ({err}). "
-                    "Use Reset password once email works, or set it on the Settings screen.")
-        return f"Login {a['username']} created. A temporary password was emailed to {a['email']}; it is not shown here."
     if t == "delete_team_user":
         return f"Deleted the login {a['username']}." if users.delete_user(a["username"]) else "That login was not found."
-    if t == "reset_team_user_password":
-        u = users.get_user(a["username"])
-        if not u or not u.get("email"):
-            return "That login or its email is missing. Nothing was changed."
-        temp = password_reset.generate_temporary_password()
-        ok, _ = users.validate_password(temp)
-        if not ok:
-            return "Could not generate a password. Nothing was changed."
-        err = _send_temp_password(u["email"], a["username"], temp, "issued")
-        if err:
-            return f"The email did not send ({err}), so the password was NOT changed."
-        if not users.update_user_password(a["username"], temp):
-            return "The email went out but saving the new password failed. Reset again before they try it."
-        return f"Password reset for {a['username']}. A temporary password was emailed to {u['email']}; it is not shown here."
     if t == "reset_customer_memory":
         if (typed or "").strip() != "RESET":
             return "Not done: Susan must type the word RESET. The draft is still waiting."
