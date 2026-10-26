@@ -142,22 +142,6 @@ def test_settings_changes_are_whitelisted_and_secrets_stay_manual(st):
         assert "by hand" in ag.run("update_settings", {secret_field: "s"}, "c", "t3")
 
 
-def test_add_user_is_manual_only_no_draft_no_user_no_email(st):
-    out = ag.run("add_team_user", {"username": "amy", "email": "amy@x.com", "role": "staff"}, "c", "t1")
-    assert "by hand on the Settings screen" in out and "draft" not in out.lower().replace("nothing was changed", "")
-    assert "amy" not in st.users and st.mail == [] and st.calls == []
-    assert "add_team_user" not in ag.DRAFT_TOOLS
-    assert "confirm_action" not in out and not ag._pending
-
-
-def test_reset_password_is_manual_only_no_email_no_change(st):
-    out = ag.run("reset_team_user_password", {"username": "nick"}, "c", "t1")
-    assert "by hand on the Settings screen" in out
-    assert st.mail == [] and st.calls == [] and not ag._pending
-    assert "reset_team_user_password" not in ag.DRAFT_TOOLS
-    assert "temporary" not in out.lower()
-
-
 def test_no_tool_emails_a_password():
     assert not hasattr(ag, "_send_temp_password")
     assert not hasattr(ag, "password_reset")

@@ -8,10 +8,10 @@ Pattern (same as draft_email / send_email in this app, now enforced in code):
   * every tool wraps the same function the screen's button calls;
   * keys, API tokens, app passwords, the access code and webhooks stay
     manual-only (Settings screen);
-  * a password is never put into the chat and never emailed: Dreamerie has no
-    invite or reset link flow, so add-user and reset-password are MANUAL-ONLY
-    (Settings screen). The tools stay so Annabelle can point there; they
-    draft nothing and change nothing.
+  * a password is never put into the chat and never emailed. Add-user and
+    reset-password DRAFT a single-use 24-hour set-password link that is emailed
+    to that user's own address only; the person sets their own password on the
+    set-password page. The link never reaches the model or the chat.
 
 main.py calls configure() once with the few functions that live in main.py and
 note_session() before each owner turn.
@@ -26,7 +26,7 @@ import secrets
 import time
 from typing import Any, Callable, Dict, Optional
 
-from . import brand, crm, results, users
+from . import brand, crm, invite_links, results, users
 
 TTL_SECONDS = 300
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -85,14 +85,14 @@ TOOLS = [
            "website_dreamerie": _S, "website_suzy_d": _S, "website_bear_arms": _S, "website_peptides": _S}),
     _tool("list_team_users", "List the team logins (username, email, role, last login). Never shows passwords."),
     _tool("add_team_user",
-          "MANUAL ONLY. Dreamerie has no invite link, so a new team login is added by hand on the Settings screen (the person sets their own password). Calling this changes nothing; it tells Susan where to go.",
+          "DRAFT a new team login: creates the login and emails a single-use 24-hour link to that email address so the person sets their own password. Nothing happens until Susan says yes and you call confirm_action. You never see the link or any password.",
           {"username": _S, "email": _S, "role": {"type": "string", "enum": ["owner", "staff"]}},
           ["username", "email"]),
     _tool("delete_team_user",
           "DRAFT deleting a team login. Cannot delete the main owner or the last owner. Nothing happens until Susan says yes and you call confirm_action.",
           {"username": _S}, ["username"]),
     _tool("reset_team_user_password",
-          "MANUAL ONLY. Dreamerie has no reset link, so a password reset is done by hand on the Settings screen. Calling this changes nothing; it tells Susan where to go.",
+          "DRAFT a password reset: emails a single-use 24-hour link to that user's own address on file so they set a new password themselves. Nothing happens until Susan says yes and you call confirm_action. The old password keeps working until they use the link. You never see the link or any password.",
           {"username": _S}, ["username"]),
     _tool("reset_customer_memory",
           "DRAFT wiping all customer data and client identity for a fresh handoff (logins and keys are kept). Super-admin only. Needs Susan to type the word RESET in her next message; pass it as typed to confirm_action.",
@@ -112,6 +112,7 @@ TOOLS = [
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
 DRAFT_TOOLS = {"save_strategy", "set_brand", "update_settings", "delete_team_user",
+               "add_team_user", "reset_team_user_password",
                "reset_customer_memory", "set_request_status"}
 
 
@@ -147,10 +148,25 @@ def _superadmin_name() -> str:
     return os.environ.get("SUPERADMIN_USERNAME", "owner").strip()
 
 
-_MANUAL_ADD = ("Adding a team login is done by hand on the Settings screen: Dreamerie has no invite link, "
-               "and I will not email or type a password. Nothing was changed.")
-_MANUAL_RESET = ("Resetting a password is done by hand on the Settings screen: Dreamerie has no reset link, "
-                 "and I will not email or type a password. Nothing was changed.")
+
+
+def _link_for(token: str) -> str:
+    base = str(_deps["site_base"]()).rstrip("/")
+    return f"{base}/set-password?token={token}"
+
+
+def _email_link(to: str, purpose: str, username: str, token: str) -> str:
+    """Send the link to the user's own address. Returns "" on success, else the reason (never the link)."""
+    if purpose == "invite":
+        subject = "Your Dreamerie Command Center login"
+        lead = f"You have been given a login ({username}) for the Dreamerie Command Center."
+    else:
+        subject = "Reset your Dreamerie Command Center password"
+        lead = f"A password reset was requested for your login ({username})."
+    body = (f"{lead}\n\nOpen this link to choose your own password. It works once and expires in 24 hours:\n\n"
+            f"{_link_for(token)}\n\nIf you were not expecting this, ignore this email; nothing changes until the link is used.")
+    res = str(_deps["send_email"](to, subject, body))
+    return "" if res.startswith("Sent to") else res.replace(token, "[link]")
 
 
 # ----------------------------------------------------------------- reads --
@@ -194,10 +210,6 @@ def _run_read(name: str, a: dict) -> str:
                 "I do not paste it into chat.")
     if name == "get_results":
         return json.dumps(results.get_monthly_summary(str(a.get("month") or "")), default=str)
-    if name == "add_team_user":
-        return _MANUAL_ADD
-    if name == "reset_team_user_password":
-        return _MANUAL_RESET
     if name == "list_pending_requests":
         rows = [r for r in crm.get_pending_requests() if r.get("status") in ("New", "Building")]
         return (f"{len(rows)} open build requests: " + "; ".join(f"{r.get('id') or r.get('record_id')}: {r.get('request') or r.get('title')} [{r.get('status')}]" for r in rows)) if rows else "No open build requests."
@@ -264,6 +276,29 @@ def _run_draft(name: str, a: dict, chat_id: str, request_id: str) -> str:
         if not rid or st not in ("New", "Building", "Done"):
             return "I need the request id and a status of New, Building or Done."
         return hold({"req_id": rid, "status": st}, f"move build request {rid} to {st}.")
+    if name == "add_team_user":
+        uname, email = str(a.get("username") or "").strip(), str(a.get("email") or "").strip()
+        role = str(a.get("role") or "staff").strip()
+        ok, why = users.validate_username(uname)
+        if not ok:
+            return why + " Nothing was changed."
+        if not _EMAIL_RE.match(email):
+            return "I need that person's own email address to send their link. Nothing was changed."
+        if role not in ("owner", "staff"):
+            return "Role must be owner or staff. Nothing was changed."
+        if users.get_user(uname):
+            return f"A login named {uname} already exists. To give them a new link, use a password reset. Nothing was changed."
+        return hold({"username": uname, "email": email, "role": role},
+                    f"create the {role} login {uname} and email a single-use link (good for 24 hours) to {email} so they set their own password.")
+    if name == "reset_team_user_password":
+        uname = str(a.get("username") or "").strip()
+        u = users.get_user(uname) if uname else None
+        if not u:
+            return f"No login named {uname or '(none given)'}. Nothing was changed."
+        email = str(u.get("email") or "").strip()
+        if not _EMAIL_RE.match(email):
+            return f"{uname} has no email address on file, so I cannot send a link. Add one on the Settings screen. Nothing was changed."
+        return hold({"username": uname}, f"email a single-use password-reset link (good for 24 hours) to {uname}'s own address, {email}. Their current password keeps working until they use it.")
     if name == "delete_team_user":
         uname = str(a.get("username") or "").strip()
         u = users.get_user(uname) if uname else None
@@ -296,6 +331,34 @@ def _apply(d: dict, chat_id: str, typed: str) -> str:
         return "Settings saved." if r.get("ok") else "Not saved: " + str(r.get("detail") or r)
     if t == "set_request_status":
         return f"Request {a['req_id']} is now {a['status']}." if crm.update_request_status(a["req_id"], a["status"]) else "That did not save."
+    if t == "add_team_user":
+        if users.get_user(a["username"]):
+            return f"A login named {a['username']} already exists. Nothing was changed."
+        import secrets as _s
+        placeholder = _s.token_urlsafe(24) + "9!"  # unknown to everyone; the person sets their own via the link
+        made, why = users.add_user(a["username"], a["email"], placeholder, a["role"])
+        if not made:
+            return "The login was not created: " + str(why)
+        if _deps.get("after_user_added"):
+            _deps["after_user_added"](a["username"])
+        token = invite_links.create(a["username"], "invite")
+        err = _email_link(a["email"], "invite", a["username"], token)
+        if err:
+            invite_links.revoke(token)
+            users.delete_user(a["username"])
+            return "The email did not go out, so I undid the new login: " + err
+        return f"Login {a['username']} created and the set-password link was emailed to {a['email']}. It works once and expires in 24 hours."
+    if t == "reset_team_user_password":
+        u = users.get_user(a["username"])
+        email = str((u or {}).get("email") or "").strip()
+        if not u or not _EMAIL_RE.match(email):
+            return "That login or its email address is no longer there. Nothing was changed."
+        token = invite_links.create(a["username"], "reset")
+        err = _email_link(email, "reset", a["username"], token)
+        if err:
+            invite_links.revoke(token)
+            return "The email did not go out, so no link exists: " + err
+        return f"A password-reset link was emailed to {email}. It works once and expires in 24 hours; the old password still works until it is used."
     if t == "delete_team_user":
         return f"Deleted the login {a['username']}." if users.delete_user(a["username"]) else "That login was not found."
     if t == "reset_customer_memory":

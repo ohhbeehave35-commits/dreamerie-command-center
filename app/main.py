@@ -65,6 +65,7 @@ from . import support
 from . import passkeys
 from . import signed_tokens
 from . import annabelle_gaps
+from . import invite_links
 from .agents import (
     MAIN_BRAIN_SYSTEM_PROMPT,
     build_main_brain_prompt,
@@ -537,6 +538,7 @@ async def access_gate(request: Request, call_next):
             "/api/passkey/enabled", "/api/passkey/auth-options", "/api/passkey/auth",
             "/api/login", "/api/public-chat", "/api/brand", "/widget",
             "/privacy",
+            "/set-password", "/api/set-password", "/api/set-password/check",  # the person following an invite/reset link has no session yet
             "/api/webhooks/stripe",
             "/api/proposals/sign",  # proposal viewer accessed by clients, not owners
             "/proposal",  # client-facing proposal viewer
@@ -3985,6 +3987,8 @@ annabelle_gaps.configure(
                               "chat_model_default": tuple(MODEL_CHOICES), "brands": tuple(brand_identity.BRANDS)},
     apply_settings=lambda fields: _apply_settings(SettingsUpdate(**fields), None, True),
     after_user_added=lambda username: _set_new_user_defaults(username),
+    send_email=lambda to, subject, body: emailer.send_email(to, subject, body),
+    site_base=lambda: _SITE_BASE,
 )
 
 
@@ -4326,6 +4330,41 @@ def public_chat(req: ChatRequest, request: Request) -> ChatResponse:
 def widget() -> FileResponse:
     """Serve the public, embeddable chat widget (for the Wix site)."""
     return FileResponse("static/widget.html")
+
+
+@app.get("/set-password")
+def set_password_page() -> FileResponse:
+    """Public page where a person follows a single-use invite/reset link and sets their own password."""
+    return FileResponse("static/set-password.html")
+
+
+class SetPasswordRequest(BaseModel):
+    token: str = ""
+    password: str = ""
+
+
+@app.post("/api/set-password")
+def set_password_with_link(req: SetPasswordRequest, request: Request) -> JSONResponse:
+    """Gate-exempt. Spends a single-use link. Wrong tokens count against the same per-IP lockout as bad logins."""
+    ip = _client_ip(request)
+    now = time.time()
+    attempts = [t for t in _unlock_attempts.get(ip, []) if now - t < UNLOCK_WINDOW_SECONDS]
+    if len(attempts) >= UNLOCK_MAX_ATTEMPTS:
+        return JSONResponse({"ok": False, "detail": "Too many attempts. Try again later."}, status_code=429)
+    ok, msg = invite_links.consume(req.token, req.password)
+    if not ok:
+        attempts.append(now)
+        _unlock_attempts[ip] = attempts
+        return JSONResponse({"ok": False, "detail": msg}, status_code=400)
+    log.info("A single-use link was used to set a password")  # never log the token or the password
+    return JSONResponse({"ok": True, "detail": msg})
+
+
+@app.get("/api/set-password/check")
+def set_password_check(token: str = "") -> JSONResponse:
+    """Gate-exempt. Lets the page say up front that a link is dead. Burns nothing."""
+    ok, why = invite_links.check(token)
+    return JSONResponse({"ok": ok, "detail": why}, status_code=200 if ok else 400)
 
 
 @app.get("/privacy")
