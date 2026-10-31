@@ -1771,7 +1771,8 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 "get_settings", "update_settings", "list_team_users",
                 "add_team_user", "delete_team_user", "reset_team_user_password",
                 "reset_customer_memory", "export_summary", "get_results",
-                "list_pending_requests", "set_request_status", "confirm_action"):
+                "list_pending_requests", "set_request_status", "confirm_action",
+                "start_new_chat", "read_chat_history", "calendar_upcoming", "push_hubspot_lead"):
                 delegated_to.append("Owner tools")
                 answer = annabelle_gaps.run(block.name, block.input or {}, chat_id=chat_id, request_id=request_id)
             elif block.name == "draft_email":
@@ -2922,7 +2923,7 @@ def chat(req: ChatRequest, request: Request) -> ChatResponse:
     req.clean()
     _persist_user_message(request, req)   # before the model runs: a stop must not lose it
     sys_prompt, tools = _owner_chat_setup(req)
-    annabelle_gaps.note_session(_scoped_chat_id(request, req.chat_id), _is_superadmin(request))
+    annabelle_gaps.note_session(_scoped_chat_id(request, req.chat_id), _is_superadmin(request), _identity_scope(request))
     try:
         result = run_main_brain(req.message, req.history, sys_prompt, tools, enable_search=True,
                                  persona="owner", file=req.file, request_id=req.request_id,
@@ -3009,7 +3010,7 @@ def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     req.clean()
     _persist_user_message(request, req)   # before the model runs: a stop must not lose it
     sys_prompt, tools = _owner_chat_setup(req)
-    annabelle_gaps.note_session(_scoped_chat_id(request, req.chat_id), _is_superadmin(request))
+    annabelle_gaps.note_session(_scoped_chat_id(request, req.chat_id), _is_superadmin(request), _identity_scope(request))
 
     def event_source():
         result: Optional[ChatResponse] = None
@@ -3136,12 +3137,17 @@ def receive_inbox_item(item: InboxItem, request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "detail": msg})
 
 
+def _start_new_chat(name: str, owner: str) -> str:
+    """The one place a new chat is made: the New chat button and Annabelle's start_new_chat both run this."""
+    return crm.create_chat_session(name, owner)
+
+
 @app.post("/api/chats/create")
 def create_chat(request: Request, name: str = "New Chat") -> JSONResponse:
     """Create a new named chat session and return the chat_id, scoped to
     whoever is logged in."""
     owner = _authed_username(request) or "shared"
-    chat_id = crm.create_chat_session(name, owner)
+    chat_id = _start_new_chat(name, owner)
     return JSONResponse({"chat_id": chat_id, "name": name})
 
 
@@ -3989,6 +3995,8 @@ annabelle_gaps.configure(
     after_user_added=lambda username: _set_new_user_defaults(username),
     send_email=lambda to, subject, body: emailer.send_email(to, subject, body),
     site_base=lambda: _SITE_BASE,
+    start_chat=lambda name, owner: _start_new_chat(name, owner),
+    hubspot_push=lambda fields: _push_hubspot_lead(HubSpotLeadRequest(**fields)),
 )
 
 
@@ -4812,9 +4820,8 @@ class HubSpotLeadRequest(BaseModel):
     notes: str = ""
 
 
-@app.post("/api/hubspot/lead")
-def hubspot_lead(req: HubSpotLeadRequest) -> JSONResponse:
-    """Owner-only. Manually push a lead into HubSpot CRM."""
+def _push_hubspot_lead(req: HubSpotLeadRequest) -> JSONResponse:
+    """The one place a manual lead is pushed: the endpoint and Annabelle's push_hubspot_lead (after the yes) both run this."""
     if not os.environ.get("HUBSPOT_ACCESS_TOKEN"):
         return JSONResponse({"ok": False, "detail": "HubSpot not configured"}, status_code=400)
     try:
@@ -4830,6 +4837,12 @@ def hubspot_lead(req: HubSpotLeadRequest) -> JSONResponse:
         return JSONResponse({"ok": False, "detail": f"HubSpot API error: {exc}"}, status_code=502)
     return JSONResponse({"ok": True, "contact_id": result["contact"]["id"],
                          "deal_id": result["deal"]["id"]})
+
+
+@app.post("/api/hubspot/lead")
+def hubspot_lead(req: HubSpotLeadRequest) -> JSONResponse:
+    """Owner-only. Manually push a lead into HubSpot CRM."""
+    return _push_hubspot_lead(req)
 
 
 class DevTicketRequest(BaseModel):

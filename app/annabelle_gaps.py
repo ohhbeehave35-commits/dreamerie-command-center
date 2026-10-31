@@ -27,6 +27,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from . import brand, crm, invite_links, results, users
+from . import calendar as gcal
 
 TTL_SECONDS = 300
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -36,19 +37,23 @@ _deps: Dict[str, Any] = {}
 # chat_id -> {draft_id: draft}
 _pending: Dict[str, Dict[str, dict]] = {}
 _superadmin_chats: Dict[str, bool] = {}
+_scopes: Dict[str, str] = {}  # chat_id -> "user:<name>" | "access" (who is asking)
 
 
 def configure(**fns: Any) -> None:
     _deps.update(fns)
 
 
-def note_session(chat_id: str, superadmin: bool) -> None:
+def note_session(chat_id: str, superadmin: bool, scope: Optional[str] = None) -> None:
     _superadmin_chats[chat_id or "default"] = bool(superadmin)
+    if scope:
+        _scopes[chat_id or "default"] = scope
 
 
 def reset_state() -> None:
     _pending.clear()
     _superadmin_chats.clear()
+    _scopes.clear()
 
 
 def _tool(name: str, description: str, props: Optional[dict] = None, required: Optional[list] = None) -> dict:
@@ -106,6 +111,18 @@ TOOLS = [
     _tool("set_request_status",
           "DRAFT moving a build request to New, Building or Done. Nothing changes until Susan says yes and you call confirm_action.",
           {"req_id": _S, "status": {"type": "string", "enum": ["New", "Building", "Done"]}}, ["req_id", "status"]),
+    _tool("start_new_chat",
+          "Start a new named chat in Susan's own chat list (the New chat button). Reversible and private to her login. Reply with the name; she opens it from the chat list.",
+          {"name": _S}),
+    _tool("read_chat_history",
+          "Read the recent messages of this chat, or of another chat of hers by chat_id (the chat history screen). Only her own login's chats; nothing is changed.",
+          {"limit": {"type": "integer"}, "chat_id": _S}),
+    _tool("calendar_upcoming",
+          "List the events coming up on the connected calendar (the Schedule panel). days defaults to 30.",
+          {"days": {"type": "integer"}}),
+    _tool("push_hubspot_lead",
+          "DRAFT pushing one lead into HubSpot as a contact and a deal (the manual HubSpot lead push). Needs a name; email, phone, company, service and notes are optional. Nothing is sent until Susan says yes and you call confirm_action.",
+          {"name": _S, "email": _S, "phone": _S, "company": _S, "service": _S, "notes": _S}, ["name"]),
     _tool("confirm_action",
           "Run a held draft. ONLY after Susan has said yes in her own message AFTER the draft was shown; never in the same turn as the draft. One use, 5 minutes. For reset_customer_memory pass typed=RESET exactly as she typed it.",
           {"draft_id": _S, "typed": _S}, ["draft_id"]),
@@ -113,7 +130,7 @@ TOOLS = [
 TOOL_NAMES = {t["name"] for t in TOOLS}
 DRAFT_TOOLS = {"save_strategy", "set_brand", "update_settings", "delete_team_user",
                "add_team_user", "reset_team_user_password",
-               "reset_customer_memory", "set_request_status"}
+               "reset_customer_memory", "set_request_status", "push_hubspot_lead"}
 
 
 # ---------------------------------------------------------------- drafts --
@@ -213,7 +230,53 @@ def _run_read(name: str, a: dict) -> str:
     if name == "list_pending_requests":
         rows = [r for r in crm.get_pending_requests() if r.get("status") in ("New", "Building")]
         return (f"{len(rows)} open build requests: " + "; ".join(f"{r.get('id') or r.get('record_id')}: {r.get('request') or r.get('title')} [{r.get('status')}]" for r in rows)) if rows else "No open build requests."
+    if name == "start_new_chat":
+        scope = _scopes.get(chat_id_for_read(a), "")
+        owner = scope[5:] if scope.startswith("user:") else "shared"
+        title = str(a.get("name") or "").strip() or "New Chat"
+        new_id = _deps["start_chat"](title, owner)
+        return f"Started a new chat called {title} (id {new_id}). It is in her chat list now."
+    if name == "read_chat_history":
+        return _read_history(a)
+    if name == "calendar_upcoming":
+        try:
+            days = max(1, min(int(a.get("days") or 30), 365))
+        except (TypeError, ValueError):
+            return "days must be a whole number."
+        r = gcal.list_upcoming_events(days=days)
+        if not r.get("connected"):
+            return "The calendar is not connected. Connect it on the Schedule screen."
+        evs = r.get("events") or []
+        if not evs:
+            return f"Nothing on the calendar in the next {days} days."
+        return f"{len(evs)} events in the next {days} days: " + "; ".join(
+            f"{e.get('date')} {e.get('time') or ''} {e.get('title')}".replace("  ", " ") for e in evs)
     return f"Unknown tool {name}."
+
+
+def chat_id_for_read(a: dict) -> str:
+    return str(a.get("_chat_id") or "default")
+
+
+def _read_history(a: dict) -> str:
+    cur = str(a.get("_chat_id") or "default")
+    other = str(a.get("chat_id") or "").strip()
+    try:
+        limit = max(1, min(int(a.get("limit") or 20), 40))
+    except (TypeError, ValueError):
+        return "limit must be a whole number."
+    if other:
+        scope = _scopes.get(cur, "")
+        if not scope:
+            return "I cannot tell whose chats these are, so sign in again to read another chat. Nothing was read."
+        target = f"{scope}:{other}"
+    else:
+        target = cur
+    rows = crm.get_history(limit, target)
+    if not rows:
+        return "No saved messages in that chat."
+    return f"{len(rows)} recent messages:\n" + "\n".join(
+        f"{r.get('role', 'user')}: {str(r.get('content', ''))[:400]}" for r in rows)
 
 
 # ---------------------------------------------------------------- drafting --
@@ -309,6 +372,16 @@ def _run_draft(name: str, a: dict, chat_id: str, request_id: str) -> str:
         if (u.get("role") or "owner") == "owner" and len(_owners()) <= 1:
             return "That is the last owner login and cannot be deleted."
         return hold({"username": uname}, f"delete the login {_user_label(u)}. Their chat history stays but they can no longer sign in.")
+    if name == "push_hubspot_lead":
+        lead_name = str(a.get("name") or "").strip()
+        if not lead_name:
+            return "I need the lead's name. Nothing was sent."
+        email = str(a.get("email") or "").strip()
+        if email and not _EMAIL_RE.match(email):
+            return "That email address does not look right. Nothing was sent."
+        lead = {k: str(a.get(k) or "").strip() for k in ("name", "email", "phone", "company", "service", "notes")}
+        return hold(lead, f"push {lead_name} into HubSpot as a contact and a deal"
+                    + (f" ({email})" if email else "") + (f", notes: {lead['notes'][:120]}" if lead["notes"] else "") + ".")
     if name == "reset_customer_memory":
         if not _superadmin_chats.get(chat_id or "default"):
             return "Only the super-admin login can wipe customer data. Nothing was changed."
@@ -359,6 +432,11 @@ def _apply(d: dict, chat_id: str, typed: str) -> str:
             invite_links.revoke(token)
             return "The email did not go out, so no link exists: " + err
         return f"A password-reset link was emailed to {email}. It works once and expires in 24 hours; the old password still works until it is used."
+    if t == "push_hubspot_lead":
+        r = _json(_deps["hubspot_push"](a))
+        if r.get("ok"):
+            return f"Pushed {a['name']} to HubSpot (contact {r.get('contact_id')}, deal {r.get('deal_id')})."
+        return "HubSpot did not take the lead: " + str(r.get("detail") or r)
     if t == "delete_team_user":
         return f"Deleted the login {a['username']}." if users.delete_user(a["username"]) else "That login was not found."
     if t == "reset_customer_memory":
@@ -398,6 +476,8 @@ def run(name: str, args: dict, chat_id: str = "", request_id: str = "") -> str:
             return _confirm(args, chat_id, request_id)
         if name in DRAFT_TOOLS:
             return _run_draft(name, args, chat_id, request_id)
+        if name in ("start_new_chat", "read_chat_history"):
+            args = dict(args, _chat_id=chat_id)
         return _run_read(name, args)
     except Exception as e:  # a tool must answer, never raise into the chat loop
         return f"That did not work: {type(e).__name__}: {e}"

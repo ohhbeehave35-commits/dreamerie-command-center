@@ -222,3 +222,122 @@ def test_every_gap_tool_has_a_dispatch_branch_in_main():
     for grp in re.findall(r'block\.name\s+in\s*\(([^)]*)\)', src):
         handled |= set(re.findall(r'"([a-z0-9_]+)"', grp))
     assert ag.TOOL_NAMES <= handled
+
+
+# ---- ORDER WIRE1 (Director P2, 30 Oct 2026 23:58 ET): the four screen actions that had no chat path ----
+
+WIRE1_NAMES = {"start_new_chat", "read_chat_history", "calendar_upcoming", "push_hubspot_lead"}
+
+
+class Wire1Store:
+    def __init__(self, monkeypatch):
+        self.calls = []
+        self.history = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi Susan"}]
+        self.events = {"connected": True, "events": [{"date": "2026-11-02", "time": "9:00 AM", "title": "Candle pour", "kind": "other"}]}
+        m = monkeypatch
+        m.setattr(ag.crm, "get_history", lambda limit=40, chat_id="default": self.calls.append(("history", limit, chat_id)) or list(self.history))
+        m.setattr(ag.gcal, "list_upcoming_events", lambda days=30, business="": self.calls.append(("cal", days)) or self.events)
+        ag.configure(
+            start_chat=lambda name, owner: self.calls.append(("chat", name, owner)) or "abc123",
+            hubspot_push=lambda f: self.calls.append(("hubspot", dict(f))) or types.SimpleNamespace(
+                body=b'{"ok": true, "contact_id": "c1", "deal_id": "d1"}'),
+        )
+
+
+@pytest.fixture
+def w1(monkeypatch):
+    return Wire1Store(monkeypatch)
+
+
+def test_wire1_names_match_the_hand_controls():
+    assert WIRE1_NAMES <= ag.TOOL_NAMES
+    assert "push_hubspot_lead" in ag.DRAFT_TOOLS
+    assert not ({"start_new_chat", "read_chat_history", "calendar_upcoming"} & ag.DRAFT_TOOLS)
+
+
+def test_start_new_chat_creates_a_chat_for_the_signed_in_person(w1):
+    ag.note_session("user:nick:c", False, scope="user:nick")
+    out = ag.run("start_new_chat", {"name": "Fall launch"}, "user:nick:c", "t1")
+    assert "abc123" in out and "Fall launch" in out
+    assert w1.calls == [("chat", "Fall launch", "nick")]
+
+
+def test_start_new_chat_on_the_shared_access_code_uses_the_shared_owner(w1):
+    ag.note_session("access:c", False, scope="access")
+    ag.run("start_new_chat", {}, "access:c", "t1")
+    assert w1.calls == [("chat", "New Chat", "shared")]
+
+
+def test_read_chat_history_reads_this_chat_and_changes_nothing(w1):
+    ag.note_session("user:nick:c", False, scope="user:nick")
+    out = ag.run("read_chat_history", {"limit": 5}, "user:nick:c", "t1")
+    assert "hello" in out and "hi Susan" in out
+    assert w1.calls == [("history", 5, "user:nick:c")]
+
+
+def test_read_chat_history_of_another_chat_stays_inside_the_persons_own_scope(w1):
+    ag.note_session("user:nick:c", False, scope="user:nick")
+    ag.run("read_chat_history", {"chat_id": "zz9"}, "user:nick:c", "t1")
+    assert w1.calls == [("history", 20, "user:nick:zz9")]
+
+
+def test_read_chat_history_refuses_to_guess_whose_chat_when_scope_unknown(w1):
+    out = ag.run("read_chat_history", {"chat_id": "zz9"}, "c", "t1")
+    assert "sign in" in out.lower() and w1.calls == []
+
+
+def test_calendar_upcoming_answers_at_once(w1):
+    out = ag.run("calendar_upcoming", {"days": 14}, "c", "t1")
+    assert "Candle pour" in out and "2026-11-02" in out
+    assert w1.calls == [("cal", 14)]
+
+
+def test_calendar_upcoming_says_when_the_calendar_is_not_connected(w1):
+    w1.events = {"connected": False, "events": []}
+    assert "not connected" in ag.run("calendar_upcoming", {}, "c", "t1").lower()
+
+
+def test_push_hubspot_lead_is_a_draft_and_runs_once_on_the_next_turn(w1):
+    d = ag.run("push_hubspot_lead", {"name": "Pat Lee", "email": "pat@x.com", "notes": "wants 20 candles"}, "c", "turn1")
+    assert d.startswith("DRAFT") and "Pat Lee" in d and w1.calls == []
+    assert "same turn" in ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "turn1")
+    assert w1.calls == []
+    out = ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "turn2")
+    assert "HubSpot" in out and "c1" in out
+    assert w1.calls == [("hubspot", {"name": "Pat Lee", "email": "pat@x.com", "phone": "", "company": "", "service": "", "notes": "wants 20 candles"})]
+    ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "turn3")
+    assert len(w1.calls) == 1
+
+
+def test_push_hubspot_lead_needs_a_name_and_a_plausible_email(w1):
+    assert "name" in ag.run("push_hubspot_lead", {}, "c", "t1").lower()
+    assert "email" in ag.run("push_hubspot_lead", {"name": "Pat", "email": "nope"}, "c", "t1").lower()
+    assert w1.calls == [] and not ag._pending.get("c")
+
+
+def test_push_hubspot_lead_reports_a_hubspot_failure_honestly(w1, monkeypatch):
+    ag.configure(hubspot_push=lambda f: types.SimpleNamespace(body=b'{"ok": false, "detail": "HubSpot not configured"}'))
+    d = ag.run("push_hubspot_lead", {"name": "Pat"}, "c", "a")
+    out = ag.run("confirm_action", {"draft_id": draft_id(d)}, "c", "b")
+    assert "not configured" in out and "pushed" not in out.lower()
+
+
+def test_wire1_tools_run_the_same_functions_the_buttons_run(monkeypatch):
+    """No second copy of the logic: the endpoints and the tools both call main's _start_new_chat / _push_hubspot_lead."""
+    import asyncio, inspect
+    import app.main as main
+    made = []
+    monkeypatch.setattr(main.crm, "create_chat_session", lambda name, owner: made.append((name, owner)) or "zz")
+    assert main._start_new_chat("A", "nick") == "zz" and made == [("A", "nick")]
+    sent = []
+    monkeypatch.setenv("HUBSPOT_ACCESS_TOKEN", "test")
+    monkeypatch.setattr(main.hubspot, "capture_lead", lambda **kw: sent.append(kw) or {"contact": {"id": "c"}, "deal": {"id": "d"}})
+    r = main.hubspot_lead(main.HubSpotLeadRequest(name="Pat"))   # the endpoint (what a hand call runs)
+    r2 = main._push_hubspot_lead(main.HubSpotLeadRequest(name="Pat"))   # what the tool runs after the yes
+    assert r.body == r2.body and len(sent) == 2
+    assert "_push_hubspot_lead(" in inspect.getsource(main.hubspot_lead)
+    assert "_start_new_chat(" in inspect.getsource(main.create_chat)
+    # and the tool wiring in main.configure(...) points at them
+    src = inspect.getsource(main)
+    assert "start_chat=lambda name, owner: _start_new_chat" in src
+    assert "hubspot_push=lambda fields: _push_hubspot_lead" in src
