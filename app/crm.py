@@ -1308,6 +1308,103 @@ def get_leads_raw(limit: int = 20) -> list:
         return []
 
 
+def _all_lead_records(max_pages: int = 20) -> list:
+    """Every Leads record (id + fields), following Airtable's page offsets."""
+    tid = _ensure_table()
+    out, offset = [], ""
+    with httpx.Client(timeout=30) as c:
+        for _ in range(max_pages):
+            params = {"pageSize": "100"}
+            if offset:
+                params["offset"] = offset
+            r = c.get(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}", headers=_headers(), params=params)
+            r.raise_for_status()
+            body = r.json()
+            out.extend({"id": rec.get("id"), "fields": rec.get("fields", {})} for rec in body.get("records", []))
+            offset = body.get("offset") or ""
+            if not offset:
+                break
+    return out
+
+
+def _lead_summary(rec: dict) -> dict:
+    f = rec.get("fields", {})
+    return {"id": rec.get("id"), "name": f.get("Name", ""), "email": f.get("Email", ""),
+            "phone": f.get("Phone", ""), "business": f.get("Business", ""),
+            "status": f.get("Status", "")}
+
+
+def score_leads(limit: int = 200) -> list:
+    """Every lead with a 0-100 score, a hot/warm/cold label and the reasons, best first."""
+    from . import lead_quality
+    if not is_configured():
+        return []
+    rows = []
+    for rec in _all_lead_records():
+        s = lead_quality.score_lead(rec["fields"])
+        rows.append(dict(_lead_summary(rec), **s))
+    rows.sort(key=lambda r: (-r["score"], r["name"].lower()))
+    return rows[: max(1, int(limit or 200))]
+
+
+def find_duplicate_leads() -> list:
+    """Groups of leads that look like the same person. Changes nothing."""
+    from . import lead_quality
+    if not is_configured():
+        return []
+    recs = _all_lead_records()
+    by_id = {r["id"]: r for r in recs}
+    flat = [dict(_lead_summary(r), id=r["id"]) for r in recs]
+    out = []
+    for g in lead_quality.find_duplicate_groups(flat):
+        out.append({"reason": g["reason"], "ids": g["ids"],
+                    "leads": [_lead_summary(by_id[i]) for i in g["ids"]]})
+    return out
+
+
+def merge_leads(keep_id: str, remove_ids: list) -> dict:
+    """Fold the duplicates into the keeper, then delete them.
+
+    The keeper is saved first; if that save fails nothing is deleted.
+    Returns {"ok", "removed", "failed", "detail"}.
+    """
+    from . import lead_quality
+    if not is_configured():
+        return {"ok": False, "removed": 0, "failed": 0, "detail": "The CRM isn't connected yet."}
+    keep_id = str(keep_id or "").strip()
+    remove_ids = [str(i).strip() for i in (remove_ids or []) if str(i).strip()]
+    if not keep_id or not remove_ids:
+        return {"ok": False, "removed": 0, "failed": 0, "detail": "I need a keeper and at least one duplicate."}
+    if keep_id in remove_ids:
+        return {"ok": False, "removed": 0, "failed": 0, "detail": "The keeper cannot also be a duplicate."}
+    try:
+        recs = {r["id"]: r for r in _all_lead_records()}
+        missing = [i for i in [keep_id] + remove_ids if i not in recs]
+        if missing:
+            return {"ok": False, "removed": 0, "failed": 0, "detail": "Not found in the CRM: " + ", ".join(missing)}
+        keep = recs[keep_id]["fields"]
+        merged = lead_quality.merge_fields(keep, [recs[i]["fields"] for i in remove_ids])
+        changes = {k: v for k, v in merged.items() if keep.get(k) != v}
+        tid = _ensure_table()
+        removed = failed = 0
+        with httpx.Client(timeout=30) as c:
+            if changes:
+                r = c.patch(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}/{keep_id}", headers=_headers(),
+                            json={"fields": changes, "typecast": True})
+                r.raise_for_status()
+            for rid in remove_ids:
+                d = c.delete(f"{_API}/v0/{AIRTABLE_BASE_ID}/{tid}/{rid}", headers=_headers())
+                if d.status_code < 300:
+                    removed += 1
+                else:
+                    failed += 1
+        return {"ok": failed == 0, "removed": removed, "failed": failed,
+                "detail": "" if not failed else f"{failed} duplicate(s) could not be removed; the keeper was updated."}
+    except Exception as e:
+        return {"ok": False, "removed": 0, "failed": 0,
+                "detail": f"Nothing was deleted. The CRM said: {type(e).__name__}."}
+
+
 def list_leads(business="", status="", search="", limit=10) -> str:
     """Return a short text list of matching leads, newest first."""
     if not is_configured():

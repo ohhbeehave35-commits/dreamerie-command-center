@@ -123,14 +123,24 @@ TOOLS = [
     _tool("push_hubspot_lead",
           "DRAFT pushing one lead into HubSpot as a contact and a deal (the manual HubSpot lead push). Needs a name; email, phone, company, service and notes are optional. Nothing is sent until Susan says yes and you call confirm_action.",
           {"name": _S, "email": _S, "phone": _S, "company": _S, "service": _S, "notes": _S}, ["name"]),
+    _tool("find_duplicate_leads",
+          "List leads in the CRM that look like the same person (same email, same phone, or same name in the same business), with their record ids. Nothing is changed.",
+          {}),
+    _tool("score_leads",
+          "Rank the CRM leads by a 0-100 score (hot, warm or cold) with the reasons in words. limit defaults to 10. Nothing is changed.",
+          {"limit": {"type": "integer"}}),
+    _tool("merge_duplicate_leads",
+          "DRAFT merging duplicate leads into one: keep_id stays (blanks filled from the others, notes joined) and every id in remove_ids is deleted. Get the ids from find_duplicate_leads. Nothing happens until Susan says yes AND types the word MERGE in her next message; pass it as typed to confirm_action.",
+          {"keep_id": _S, "remove_ids": {"type": "array", "items": _S}}, ["keep_id", "remove_ids"]),
     _tool("confirm_action",
-          "Run a held draft. ONLY after Susan has said yes in her own message AFTER the draft was shown; never in the same turn as the draft. One use, 5 minutes. For reset_customer_memory pass typed=RESET exactly as she typed it.",
+          "Run a held draft. ONLY after Susan has said yes in her own message AFTER the draft was shown; never in the same turn as the draft. One use, 5 minutes. For reset_customer_memory pass typed=RESET, and for merge_duplicate_leads typed=MERGE, exactly as she typed it.",
           {"draft_id": _S, "typed": _S}, ["draft_id"]),
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
 DRAFT_TOOLS = {"save_strategy", "set_brand", "update_settings", "delete_team_user",
                "add_team_user", "reset_team_user_password",
-               "reset_customer_memory", "set_request_status", "push_hubspot_lead"}
+               "reset_customer_memory", "set_request_status", "push_hubspot_lead",
+               "merge_duplicate_leads"}
 
 
 # ---------------------------------------------------------------- drafts --
@@ -238,6 +248,31 @@ def _run_read(name: str, a: dict) -> str:
         return f"Started a new chat called {title} (id {new_id}). It is in her chat list now."
     if name == "read_chat_history":
         return _read_history(a)
+    if name == "find_duplicate_leads":
+        if not crm.is_configured():
+            return "The CRM isn't connected yet. (Airtable token not set.)"
+        groups = crm.find_duplicate_leads()
+        if not groups:
+            return "No duplicate leads found."
+        lines = []
+        for g in groups:
+            lines.append(g["reason"] + ": " + " | ".join(
+                f"{l['name'] or '(no name)'} [{l['id']}]" + (f" {l['email']}" if l.get("email") else "")
+                + (f" {l['phone']}" if l.get("phone") else "") for l in g["leads"]))
+        return f"{len(groups)} possible duplicate groups:\n" + "\n".join(lines)
+    if name == "score_leads":
+        if not crm.is_configured():
+            return "The CRM isn't connected yet. (Airtable token not set.)"
+        try:
+            lim = max(1, min(int(a.get("limit") or 10), 50))
+        except (TypeError, ValueError):
+            return "limit must be a whole number."
+        rows = crm.score_leads(limit=lim)
+        if not rows:
+            return "No leads in the CRM to score."
+        return f"Top {len(rows)} leads by score:\n" + "\n".join(
+            f"{r['score']} {r['label']}: {r['name'] or '(no name)'} [{r['id']}] ({r['status'] or 'New'}); " + "; ".join(r["reasons"])
+            for r in rows)
     if name == "calendar_upcoming":
         try:
             days = max(1, min(int(a.get("days") or 30), 365))
@@ -382,6 +417,27 @@ def _run_draft(name: str, a: dict, chat_id: str, request_id: str) -> str:
         lead = {k: str(a.get(k) or "").strip() for k in ("name", "email", "phone", "company", "service", "notes")}
         return hold(lead, f"push {lead_name} into HubSpot as a contact and a deal"
                     + (f" ({email})" if email else "") + (f", notes: {lead['notes'][:120]}" if lead["notes"] else "") + ".")
+    if name == "merge_duplicate_leads":
+        keep_id = str(a.get("keep_id") or "").strip()
+        raw = a.get("remove_ids")
+        remove = [str(i).strip() for i in (raw if isinstance(raw, list) else [raw] if raw else []) if str(i).strip()]
+        if not keep_id:
+            return "Which lead is the keeper? I need keep_id. Nothing was changed."
+        if not remove:
+            return "Which duplicates should be folded in? I need remove_ids. Nothing was changed."
+        if keep_id in remove:
+            return "The keeper cannot also be a duplicate. Nothing was changed."
+        if not crm.is_configured():
+            return "The CRM isn't connected yet. Nothing was changed."
+        every = {r["id"]: r for r in crm.score_leads(limit=100000)}
+        missing = [i for i in [keep_id] + remove if i not in every]
+        if missing:
+            return "Not found in the CRM: " + ", ".join(missing) + ". Nothing was changed."
+        k = every[keep_id]
+        names = ", ".join(f"{every[i]['name'] or '(no name)'} [{i}]" for i in remove)
+        return hold({"keep_id": keep_id, "remove_ids": remove},
+                    f"MERGE: keep {k['name'] or '(no name)'} [{keep_id}], fill its blanks from, then DELETE {names}. "
+                    "This cannot be undone. Susan must say yes and type the word MERGE in her next message.")
     if name == "reset_customer_memory":
         if not _superadmin_chats.get(chat_id or "default"):
             return "Only the super-admin login can wipe customer data. Nothing was changed."
@@ -437,6 +493,13 @@ def _apply(d: dict, chat_id: str, typed: str) -> str:
         if r.get("ok"):
             return f"Pushed {a['name']} to HubSpot (contact {r.get('contact_id')}, deal {r.get('deal_id')})."
         return "HubSpot did not take the lead: " + str(r.get("detail") or r)
+    if t == "merge_duplicate_leads":
+        if (typed or "").strip() != "MERGE":
+            return "Not done: Susan must type the word MERGE. The draft is still waiting."
+        r = crm.merge_leads(a["keep_id"], a["remove_ids"])
+        if r.get("ok"):
+            return f"Merged: kept {a['keep_id']} and removed {r['removed']} duplicate lead(s)."
+        return "The merge did not finish: " + str(r.get("detail") or r)
     if t == "delete_team_user":
         return f"Deleted the login {a['username']}." if users.delete_user(a["username"]) else "That login was not found."
     if t == "reset_customer_memory":
@@ -462,6 +525,8 @@ def _confirm(a: dict, chat_id: str, request_id: str) -> str:
         return "Not run: the draft and the yes cannot be in the same turn. Show Susan the draft and wait for her next message."
     if d["tool"] == "reset_customer_memory" and (str(a.get("typed") or "").strip() != "RESET"):
         return "Not run: Susan must type the word RESET. The draft is still waiting."
+    if d["tool"] == "merge_duplicate_leads" and (str(a.get("typed") or "").strip() != "MERGE"):
+        return "Not run: Susan must type the word MERGE. The draft is still waiting."
     bucket.pop(did, None)
     return _apply(d, chat_id, str(a.get("typed") or ""))
 

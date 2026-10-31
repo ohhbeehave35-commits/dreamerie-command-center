@@ -394,6 +394,7 @@ _OWNER_ONLY_EXACT_PATHS = {
     "/auth/google-callback", "/auth/drive-callback", "/dropbox/callback",
     "/lightspeed/callback",
     "/api/agent-name", "/api/events", "/api/setup", "/api/tts", "/api/leads", "/api/assets",
+    "/api/leads/duplicates", "/api/leads/scores", "/api/leads/merge",
     "/api/diagnostic", "/api/features", "/api/health", "/api/support/report",
     "/api/hubspot/lead",
     "/api/dev/ticket",
@@ -1772,7 +1773,8 @@ def _run_main_brain_events(user_message: str, history: List[Dict[str, str]],
                 "add_team_user", "delete_team_user", "reset_team_user_password",
                 "reset_customer_memory", "export_summary", "get_results",
                 "list_pending_requests", "set_request_status", "confirm_action",
-                "start_new_chat", "read_chat_history", "calendar_upcoming", "push_hubspot_lead"):
+                "start_new_chat", "read_chat_history", "calendar_upcoming", "push_hubspot_lead",
+                "find_duplicate_leads", "score_leads", "merge_duplicate_leads"):
                 delegated_to.append("Owner tools")
                 answer = annabelle_gaps.run(block.name, block.input or {}, chat_id=chat_id, request_id=request_id)
             elif block.name == "draft_email":
@@ -4481,6 +4483,37 @@ def get_leads(request: Request, limit: int = 20) -> JSONResponse:
         return JSONResponse({"leads": records})
     except Exception as e:
         return JSONResponse({"leads": [], "error": str(e)}, status_code=500)
+
+
+@app.get("/api/leads/scores")
+def leads_scores(limit: int = 50) -> JSONResponse:
+    """Owner-only. Every lead with a 0-100 score, hot/warm/cold and the reasons."""
+    if not crm.is_configured():
+        return JSONResponse({"leads": [], "error": "Airtable not configured"})
+    return JSONResponse({"leads": crm.score_leads(limit=min(max(limit, 1), 500))})
+
+
+@app.get("/api/leads/duplicates")
+def leads_duplicates() -> JSONResponse:
+    """Owner-only. Groups of leads that look like the same person. Changes nothing."""
+    if not crm.is_configured():
+        return JSONResponse({"groups": [], "error": "Airtable not configured"})
+    return JSONResponse({"groups": crm.find_duplicate_leads()})
+
+
+class LeadMergeRequest(BaseModel):
+    keep_id: str
+    remove_ids: List[str]
+    typed: str = ""
+
+
+@app.post("/api/leads/merge")
+def leads_merge(req: LeadMergeRequest) -> JSONResponse:
+    """Owner-only. Fold duplicates into the keeper and delete them. Needs the typed word MERGE."""
+    if (req.typed or "").strip() != "MERGE":
+        return JSONResponse({"ok": False, "detail": "Type the word MERGE to confirm. Nothing was changed."}, status_code=400)
+    r = crm.merge_leads(req.keep_id, req.remove_ids)
+    return JSONResponse(r, status_code=200 if r.get("ok") else 400)
 
 
 @app.get("/api/assets")
