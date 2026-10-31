@@ -4,3 +4,7 @@ __pycache__/
 .pre-fullversion-app/
 .pre-fullversion-static/
 __pycache__/
+.vercel
+
+.vercel
+.env*

@@ -1,0 +1,6 @@
+{
+  "framework": "fastapi",
+  "functions": {
+    "index.py": { "includeFiles": "{static/**,app/**,LOCKED-DECISIONS.md}" }
+  }
+}
